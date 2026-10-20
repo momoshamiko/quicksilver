@@ -106,9 +106,18 @@ public final class QuicksilverSettings implements PreLaunchEntrypoint {
 			}
 		}
 
-		if (hud && launchHud == null) {
+		// RIL-497: whether Metal can run here is decided (and a blocker logged) now, at preLaunch, whatever Use Metal says.
+		// MTL_HUD_ENABLED=1 asks for Apple's HUD on any Metal layer, and MoltenVK presents through one too (the HUD probably shows
+		// on Vulkan then [inference, not seen]). So it is set only when the game will draw with Quicksilver: Use Metal on (a launch
+		// flag's value, else the file's) and Metal possible here.
+		MetalSupport.Blocker blocker = MetalSupport.blocker();
+		boolean metalRuns = Boolean.parseBoolean(System.getProperty(METAL_PROPERTY, "true")) && blocker == null;
+		if (hud && launchHud == null && metalRuns) {
 			hudAtLaunch = setenv(HUD_ENV, "1");
 			LOG.info("Quicksilver settings: hud=true from {}: {}", path, hudAtLaunch ? HUD_ENV + "=1 set before Metal starts" : "could not set " + HUD_ENV);
+		} else if (hud && launchHud == null) {
+			LOG.info("Quicksilver settings: hud=true in {}, but the game will not draw with Metal ({}), so {} stays unset", path,
+				blocker != null ? "Metal cannot run here" : "Use Metal is off", HUD_ENV);
 		} else if (hudFlag != null) {
 			LOG.info("Quicksilver settings: the launcher set {}={}, so the Metal HUD stays off{}", HUD_ENV, hudFlag, storedHud != null ? " (hud=" + hud + " in " + path + ")" : "");
 		} else if (storedHud != null) {

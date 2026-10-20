@@ -1,8 +1,8 @@
 # Quicksilver (`mod/mcms-metal`)
 
 A native Metal backend for Minecraft's renderpearl layer (Minecraft 26.3, Fabric, Java 25), cut from
-[mcopt](https://github.com/noahdunnagan/mcopt) v0.3.0-alpha.2 (Apache-2.0). It puts Metal first in the game's
-backend list, with OpenGL and Vulkan (MoltenVK) behind it as fallbacks. Mixins make the seams around it work:
+[mcopt](https://github.com/noahdunnagan/mcopt) v0.3.0-alpha.2 (Apache-2.0). Where Metal can run (see "Where Metal runs"), it
+puts Metal first in the game's backend list, with OpenGL and Vulkan (MoltenVK) behind it as fallbacks. Mixins make the seams around it work:
 Sodium draws through its Vulkan multi-draw path on Metal, Vitrail's shader engine runs instead of turning itself
 off on a non-Vulkan backend, Vitrail can fill the mip chains of a pack's colour targets on Metal, since M4
 Vitrail's compute passes, storage images and storage buffers run on Metal, Sodium's geometry arenas release the
@@ -54,16 +54,32 @@ With Sodium installed, Quicksilver has a page in Options, Video Settings, next t
 | Metal HUD | Off, On | Apple's Metal Performance HUD: `MTL_HUD_ENABLED=1` at launch, then the layer's `developerHUDProperties` (`mc_layer_hud`, logging off) | turning it on: after a restart, unless the HUD was enabled at launch; then at once both ways |
 
 Colors and Metal HUD are grey when the game does not run on Metal. While Use Metal is on, an overlay greys out Sodium's own
-Graphics API row (`sodium:general.graphics_api`): Metal goes first whatever it says (`PreferredGraphicsApiMixin`).
+Graphics API row (`sodium:general.graphics_api`): Metal goes first whatever it says (`PreferredGraphicsApiMixin`). Where Metal
+cannot run (next section), Use Metal is grey too, its tooltip names the reason, and the overlay is left out, so Sodium's row
+chooses the backend.
 
 The page saves `<game dir>/config/quicksilver.properties` (`metal`, `colors`, `hud`) on Apply; a launch never creates it. The
 preLaunch entrypoint `QuicksilverSettings` reads it before Minecraft's classes load: it sets each system property the launch
 command did not set, logs one `Quicksilver settings:` line per value it applies (or per launch flag that wins over the file),
-and sets `MTL_HUD_ENABLED=1` with libc `setenv` (never overwriting a launcher's value) when the HUD is on. A launch flag wins:
+and sets `MTL_HUD_ENABLED=1` with libc `setenv` (never overwriting a launcher's value) when the HUD is on and the game will draw
+with Metal: Use Metal on and Metal possible here. Otherwise it logs that the variable stays unset, because MoltenVK presents
+through a Metal layer too and would likely show Apple's HUD on Vulkan [inference, not seen]. A launch flag wins:
 its row shows the flag's value, grey, with the flag named in the tooltip (`-Dmcms.metal.colorspace=none` shows as Accurate,
 which an untagged layer looks like). Without a `hud` key the HUD setting follows the launcher (`MTL_HUD_ENABLED=1` keeps it on),
 and a launcher value other than `1` holds the row grey. The benchmark's instances have no such file, so their `-D` configs run
 as before.
+
+## Where Metal runs
+
+Minecraft 26.3 tries the next backend in its list only when one throws a `BackendCreationException` (`Minecraft.<init>`, javap
+of the client jar); any other throwable ends the start. So Quicksilver offers Metal only where it can run (`MetalSupport`,
+decided once at preLaunch): macOS 15 or newer (`os.version`) on Apple silicon (`os.arch` `aarch64`), because
+`libmcmsmetal.dylib` is built for arm64 and macOS 15, and not while Iris is installed (in either of its modes), because Iris
+draws only through OpenGL: Iris 1.11.7 picks its mode from `options.txt` alone and casts the device's backend to OpenGL's (`IrisRenderSystem.getGlDevice`). Elsewhere
+`PreferredGraphicsApiMixin` leaves the list as it is, the game starts as without Quicksilver, and one line says why
+(`Quicksilver: Metal stays off, so the game starts with its own graphics backends: ...`). Where Metal is offered and the device
+still cannot be made, for example when the library does not load, `MetalBackend.createDevice` turns the error into a
+`BackendCreationException`, so the game logs "Failed to create backend Metal" and tries OpenGL and Vulkan (RIL-497).
 
 ## Properties (system properties, `-D`)
 

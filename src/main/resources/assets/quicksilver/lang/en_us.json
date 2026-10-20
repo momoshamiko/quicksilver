@@ -14,5 +14,8 @@
 	"quicksilver.options.locked": "Set by the launch command (%s), so this page cannot change it.",
 	"quicksilver.options.locked_launcher": "Set by the launcher's environment (%s), so the HUD stays off and this page cannot change it.",
 	"quicksilver.options.not_on_metal": "The game is not running on Metal now.",
+	"quicksilver.options.blocked.platform": "Quicksilver needs a Mac with Apple silicon and macOS 15 or newer. Here the game uses OpenGL or Vulkan, as the Graphics API row on Sodium's General page says.",
+	"quicksilver.options.blocked.intel": "Quicksilver's Metal library is for Apple silicon, and the game runs on an Intel Java here (an Intel Mac, or Rosetta). On an Apple silicon Mac, choose a Java for Apple silicon in the launcher.",
+	"quicksilver.options.blocked.iris": "Iris is installed. Iris draws only with OpenGL, so Quicksilver stays off and the game starts without Metal. For shader packs on Metal, use Vitrail instead of Iris.",
 	"quicksilver.options.graphics_api_note": "Quicksilver: while Use Metal is on (Video Settings, Quicksilver), Metal draws the game and this choice waits."
 }

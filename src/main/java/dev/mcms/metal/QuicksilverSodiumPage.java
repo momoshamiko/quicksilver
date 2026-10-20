@@ -19,8 +19,9 @@ import org.jspecify.annotations.Nullable;
 /**
  * One page, "Settings", with Use Metal, Colors and Metal HUD (QuicksilverSettings holds the values and writes the file), and an
  * overlay that greys out Sodium's own Graphics API row while Use Metal is on: Quicksilver puts Metal first whatever that row says
- * (PreferredGraphicsApiMixin). Sodium builds the page at the head of Minecraft.onGameLoadFinished, after the backend started, so
- * MetalDevice.current tells whether the game runs on Metal.
+ * (PreferredGraphicsApiMixin). Where Metal cannot run (MetalSupport, RIL-497), Use Metal is grey with the reason and the overlay
+ * is left out, so Sodium's row chooses the backend. Sodium builds the page at the head of Minecraft.onGameLoadFinished, after the
+ * backend started, so MetalDevice.current tells whether the game runs on Metal.
  */
 public final class QuicksilverSodiumPage implements ConfigEntryPoint {
 	private static final Identifier METAL = Identifier.fromNamespaceAndPath("quicksilver", "metal");
@@ -35,17 +36,20 @@ public final class QuicksilverSodiumPage implements ConfigEntryPoint {
 	@Override
 	public void registerConfigLate(ConfigBuilder builder) {
 		boolean onMetal = MetalDevice.current != null;
+		MetalSupport.Blocker blocker = MetalSupport.blocker();
 		// One handler object, so Sodium writes the file once per Apply, not once per changed row.
 		StorageEventHandler storage = QuicksilverSettings::save;
 
+		MutableComponent metalTooltip = tooltip("quicksilver.options.metal.tooltip", QuicksilverSettings.metalFlag(), QuicksilverSettings.METAL_PROPERTY, true);
+		if (blocker != null) metalTooltip.append(Component.literal("\n\n")).append(Component.translatable(blocker.langKey));
 		var metal = builder.createBooleanOption(METAL)
 			.setName(Component.translatable("quicksilver.options.metal"))
-			.setTooltip(tooltip("quicksilver.options.metal.tooltip", QuicksilverSettings.metalFlag(), QuicksilverSettings.METAL_PROPERTY, true))
+			.setTooltip(metalTooltip)
 			.setDefaultValue(true)
 			.setBinding(QuicksilverSettings::setMetal, QuicksilverSettings::metalShown)
 			.setStorageHandler(storage)
 			.setFlags(OptionFlag.REQUIRES_GAME_RESTART)
-			.setEnabled(QuicksilverSettings.metalFlag() == null);
+			.setEnabled(blocker == null && QuicksilverSettings.metalFlag() == null);
 
 		var colors = builder.createEnumOption(COLORS, QuicksilverSettings.Colors.class)
 			.setName(Component.translatable("quicksilver.options.colors"))
@@ -75,22 +79,24 @@ public final class QuicksilverSodiumPage implements ConfigEntryPoint {
 		// Option flags are fixed when the page is built: without MTL_HUD_ENABLED at launch, turning the HUD on needs a restart.
 		if (!QuicksilverSettings.hudAtLaunch()) hud.setFlags(OptionFlag.REQUIRES_GAME_RESTART);
 
-		builder.registerOwnModOptions()
+		var options = builder.registerOwnModOptions()
 			.setNonTintedIcon(ICON)
 			.setColorTheme(builder.createColorTheme().setBaseThemeRGB(THEME))
 			.addPage(builder.createOptionPage()
 				.setName(Component.translatable("quicksilver.options.page"))
-				.addOptionGroup(builder.createOptionGroup().addOption(metal).addOption(colors).addOption(hud)))
-			// Sodium merges an overlay field by field (OptionBuilderImpl.buildWithBaseOption): the row keeps Sodium's binding, values,
-			// restart flag and tooltip text; only the enabled state and the added line come from here.
-			.registerOptionOverlay(GRAPHICS_API, builder.createEnumOption(GRAPHICS_API, PreferredGraphicsApi.class)
-				.setEnabledProvider(state -> !state.readBooleanOption(METAL), METAL)
-				.setTooltip(value -> Component.translatable(value == PreferredGraphicsApi.VULKAN ? "options.graphicsApi.tooltip.vulkan" : "options.graphicsApi.tooltip")
-					.append(Component.literal("\n\n")).append(Component.translatable("quicksilver.options.graphics_api_note"))));
+				.addOptionGroup(builder.createOptionGroup().addOption(metal).addOption(colors).addOption(hud)));
+		// Where Metal cannot run, Sodium's Graphics API row decides the backend, so it stays free.
+		if (blocker != null) return;
+		// Sodium merges an overlay field by field (OptionBuilderImpl.buildWithBaseOption): the row keeps Sodium's binding, values,
+		// restart flag and tooltip text; only the enabled state and the added line come from here.
+		options.registerOptionOverlay(GRAPHICS_API, builder.createEnumOption(GRAPHICS_API, PreferredGraphicsApi.class)
+			.setEnabledProvider(state -> !state.readBooleanOption(METAL), METAL)
+			.setTooltip(value -> Component.translatable(value == PreferredGraphicsApi.VULKAN ? "options.graphicsApi.tooltip.vulkan" : "options.graphicsApi.tooltip")
+				.append(Component.literal("\n\n")).append(Component.translatable("quicksilver.options.graphics_api_note"))));
 	}
 
 	/** The row's own text, then why it is grey: a launch flag that holds it, or no Metal backend running. */
-	private static Component tooltip(String key, @Nullable String flag, String property, boolean onMetal) {
+	private static MutableComponent tooltip(String key, @Nullable String flag, String property, boolean onMetal) {
 		MutableComponent text = Component.translatable(key);
 		if (flag != null) text.append(Component.literal("\n\n")).append(Component.translatable("quicksilver.options.locked", "-D" + property + "=" + flag));
 		if (!onMetal) text.append(Component.literal("\n\n")).append(Component.translatable("quicksilver.options.not_on_metal"));
