@@ -1,0 +1,18 @@
+{
+	"quicksilver.options.page": "Settings",
+	"quicksilver.options.metal": "Use Metal",
+	"quicksilver.options.metal.tooltip": "On: Quicksilver draws the game with Metal, the Mac's own graphics.\nOff: the game uses OpenGL or Vulkan, as the Graphics API row on Sodium's General page says. Vitrail's shader packs draw only on Metal or Vulkan, not on OpenGL.\nApplies after a restart.",
+	"quicksilver.options.colors": "Colors",
+	"quicksilver.options.colors.tooltip": "Vivid: the strong colors of Display P3.\nAccurate: colors matched from sRGB, as OpenGL and Vulkan show them unless a mod changes it.\nAutomatic: Vivid when the mod mac-colorspace-rollback is installed, otherwise Accurate.\nApplies at once.",
+	"quicksilver.options.colors.automatic": "Automatic",
+	"quicksilver.options.colors.vivid": "Vivid",
+	"quicksilver.options.colors.accurate": "Accurate",
+	"quicksilver.options.hud": "Metal HUD",
+	"quicksilver.options.hud.tooltip": "Apple's Metal Performance HUD in a corner of the screen: frames per second, GPU time, memory and whether the frames go straight to the display.",
+	"quicksilver.options.hud.restart": "Turning it on applies after a restart.",
+	"quicksilver.options.hud.live": "Applies at once.",
+	"quicksilver.options.locked": "Set by the launch command (%s), so this page cannot change it.",
+	"quicksilver.options.locked_launcher": "Set by the launcher's environment (%s), so the HUD stays off and this page cannot change it.",
+	"quicksilver.options.not_on_metal": "The game is not running on Metal now.",
+	"quicksilver.options.graphics_api_note": "Quicksilver: while Use Metal is on (Video Settings, Quicksilver), Metal draws the game and this choice waits."
+}

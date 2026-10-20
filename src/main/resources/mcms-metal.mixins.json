@@ -1,0 +1,25 @@
+{
+	"required": true,
+	"package": "dev.mcms.metal.mixin",
+	"plugin": "dev.mcms.metal.mixin.McmsMetalMixinPlugin",
+	"compatibilityLevel": "JAVA_25",
+	"client": [
+		"PreferredGraphicsApiMixin",
+		"SodiumDrawBackendMixin",
+		"SodiumBufferArenaAccessor",
+		"SodiumSingleOwnerArenaMixin",
+		"SodiumSharedArenaMixin",
+		"VitrailHostReportMixin",
+		"VitrailDeviceReportMixin",
+		"VitrailMipmapCommandsMixin",
+		"VitrailStorageImagesMixin",
+		"VitrailStorageBuffersMixin",
+		"VitrailGpuRecordingMixin",
+		"VitrailGpuFormatsMixin",
+		"VitrailComputeShaderMixin",
+		"VitrailPackComputeMixin",
+		"VitrailComputePassMixin",
+		"DistantHorizonsRenderApiMixin"
+	],
+	"injectors": { "defaultRequire": 1 }
+}

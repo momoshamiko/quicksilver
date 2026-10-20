@@ -1,0 +1,66 @@
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+}
+
+version = '0.1.0'
+group = 'dev.mcms'
+
+// The public name (chosen 2026-10-16): the jar is quicksilver-<version>.jar. The Gradle project keeps the folder's name.
+base {
+	archivesName = 'quicksilver'
+}
+
+repositories {
+	// Modrinth's Maven serves the mixin targets by version id: the same files as the project's pins (bench/mods.lock.json,
+	// sha512 compared 2026-10-20), so a clone of the public source builds without the development repository's cache.
+	exclusiveContent {
+		forRepository {
+			maven {
+				name = 'Modrinth'
+				url = 'https://api.modrinth.com/maven'
+			}
+		}
+		filter { includeGroup 'maven.modrinth' }
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${loader_version}"
+	// The mixin targets. Minecraft 26.x is unobfuscated, so these jars compile as they are.
+	compileOnly 'maven.modrinth:sodium:v4PSXean'           // Sodium 0.9.3-alpha.1+mc26.3
+	compileOnly 'maven.modrinth:vitrail-shaders:Ul13RHiD'  // Vitrail 0.12.0-beta+mc26.3
+	// Not a project pin: the Distant Horizons release that DistantHorizonsRenderApiMixin targets.
+	compileOnly 'maven.modrinth:distanthorizons:TGgEbP9A'  // Distant Horizons 3.3.4 for 26.3
+}
+
+def nativeOut = layout.buildDirectory.dir('natives/natives')
+
+// mcopt's clang flags (vendor/mcopt/metal/build.gradle), this backend's one translation unit only.
+tasks.register('compileNative', Exec) {
+	def sources = ['mcmetal.m'].collect { file("src/main/native/$it") }
+	def output = nativeOut.get().file('libmcmsmetal.dylib').asFile
+	inputs.files sources, file('src/main/native/mcmetal.h')
+	outputs.file output
+	doFirst { output.parentFile.mkdirs() }
+	commandLine(['clang', '-fno-objc-arc', '-O2', '-Wall', '-arch', 'arm64', '-mmacosx-version-min=15.0', '-dynamiclib', '-install_name', '@rpath/libmcmsmetal.dylib',
+		'-framework', 'AppKit', '-framework', 'CoreGraphics', '-framework', 'CoreVideo', '-framework', 'Foundation', '-framework', 'Metal', '-framework', 'QuartzCore', '-o', output] + sources)
+}
+
+processResources {
+	dependsOn 'compileNative'
+	from(layout.buildDirectory.dir('natives'))
+	inputs.property 'version', version
+	filesMatching('fabric.mod.json') { expand 'version': version }
+}
+
+jar {
+	// Apache-2.0 asks for LICENSE and NOTICE in every copy. LGPL-3.0 §4b asks for the GPL and LGPL texts with the four files
+	// adapted from Vitrail (README.md, Licences).
+	from(rootProject.file('LICENSE'))
+	from(rootProject.file('NOTICE'))
+	from(rootProject.file('LICENSE-GPL-3.0'))
+	from(rootProject.file('LICENSE-LGPL-3.0'))
+}
+
+tasks.withType(JavaCompile).configureEach { it.options.release = 25 }

@@ -1,0 +1,20 @@
+Quicksilver (mod id quicksilver; the Metal backend of MC Metal Shaders, source folder mod/mcms-metal) includes software
+from mcopt (https://github.com/noahdunnagan/mcopt), Copyright 2026 Noah Dunnagan, licensed under the Apache License 2.0
+(see LICENSE). The Metal backend classes and the native library in this mod are derived from mcopt v0.3.0-alpha.2; each
+changed file marks what changed. mcopt's own NOTICE follows verbatim, as Apache-2.0 asks.
+
+It also includes code adapted from Vitrail 0.12.0-beta (https://github.com/avpbynf/Vitrail-Shaders), Copyright the Vitrail
+authors, licensed under the GNU Lesser General Public License version 3 only (LGPL-3.0-only). Vitrail is used in this mod,
+and Vitrail and its use are covered by the LGPL-3.0. The adapted files say so in their header and keep that licence:
+dev/vitrail/render/McmsMetalCompute.java, dev/mcms/metal/vitrail/MetalStorageImages.java,
+dev/mcms/metal/vitrail/MetalStorageBuffers.java and dev/mcms/metal/mixin/VitrailComputeShaderMixin.java (see README.md,
+Licences). The LGPL-3.0 text is in LICENSE-LGPL-3.0, and the GPL-3.0 text it builds on is in LICENSE-GPL-3.0. The source
+of those files and of the whole mod is at https://github.com/momoshamiko/quicksilver.
+
+mcopt
+Copyright 2026 Noah Dunnagan
+
+mcopt, a Minecraft mod, was created by Noah Dunnagan. If you use or redistribute this code, keep this NOTICE with it
+and credit mcopt (https://github.com/noahdunnagan/mcopt).
+
+mcopt is licensed under the Apache License, Version 2.0 (LICENSE).

@@ -1,0 +1,32 @@
+{
+	"schemaVersion": 1,
+	"id": "quicksilver",
+	"version": "${version}",
+	"name": "Quicksilver",
+	"description": "A native Metal backend for Minecraft's renderpearl layer (the MC Metal Shaders project), cut from mcopt 0.3.0-alpha.2, with mixins that let Sodium draw, Vitrail's engine run and Distant Horizons take its Vulkan paths on it. Settings: Options, Video Settings, Quicksilver (with Sodium). Properties: -Dmcms.metal.* (README.md).",
+	"license": ["Apache-2.0", "LGPL-3.0-only"],
+	"contact": {
+		"sources": "https://github.com/momoshamiko/quicksilver"
+	},
+	"icon": "assets/quicksilver/icon.png",
+	"environment": "client",
+	"mixins": ["mcms-metal.mixins.json"],
+	"entrypoints": {
+		"preLaunch": ["dev.mcms.metal.QuicksilverSettings"],
+		"sodium:config_api_user": ["dev.mcms.metal.QuicksilverSodiumPage"]
+	},
+	"depends": {
+		"fabricloader": ">=0.19.5",
+		"minecraft": "~26.3",
+		"java": ">=25"
+	},
+	"breaks": {
+		"mcopt-metal": "*",
+		"mcms-metal": "*"
+	},
+	"suggests": {
+		"sodium": "*",
+		"vitrail": "*",
+		"distanthorizons": "*"
+	}
+}
