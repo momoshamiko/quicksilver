@@ -14,18 +14,19 @@ is public at https://github.com/momoshamiko/quicksilver, one snapshot per releas
 
 Names: the public name is Quicksilver (chosen 2026-10-16). Players see it as the mod id `quicksilver`, the shown
 name "Quicksilver", the jar `quicksilver-<version>.jar`, the driver string in the game's log ("Using graphics backend Metal,
-using drivers: Metal (Quicksilver 0.1.0, from mcopt 0.3.0-alpha.2)") and the MSL cache folder `<game dir>/quicksilver/`.
+using drivers: Metal (Quicksilver 0.1.1, from mcopt 0.3.0-alpha.2)") and the MSL cache folder `<game dir>/quicksilver/`.
 The project's internal name stays where players choose nothing: this folder, the package `dev.mcms.metal`, the
 `-Dmcms.metal.*` properties, the mixin config `mcms-metal.mixins.json`, the native library `libmcmsmetal.dylib`, and the
 `mcms-metal` tag at the start of the backend's log lines and error messages (bench scripts such as `bench/soak_check.py`
 and `bench/texlog_report.py` read those lines). `fabric.mod.json` lists the old mod id `mcms-metal` under `breaks`, so
 Fabric Loader refuses to start an old build and a new one together.
 
-Icon: a chrome QS square, designed in Blender and chosen on 2026-10-17: the letters cut out of a chrome slab, with a
-round disc in the Q, rendered in Cycles. The jar ships `src/main/resources/assets/quicksilver/icon.png` (128x128, named
-by `fabric.mod.json` `icon` for Mod Menu), and `art/icon-512.png` (512x512) is the copy for the Modrinth page. Both are
-scaled down with Lanczos from a 2048x2048 render of the Blender file, which stays outside the repo. The letters are
-see-through, so they take the color of the background behind the icon.
+Icon: the words QUICK SILVER in white pixel letters on a black square, drawn in Illustrator on 2026-10-20. It replaces the
+chrome QS square of 2026-10-17, whose Q was hard to read. The jar ships `src/main/resources/assets/quicksilver/icon.png`
+(128x128, named by `fabric.mod.json` `icon` for Mod Menu; Sodium's Video Settings shows it on Quicksilver's page), and
+`art/icon-512.png` (512x512) is a larger copy. Both are scaled down with a box filter from a 1822x1822 export of the
+Illustrator file, which stays outside the repo: the export's two partly covered edge columns are cut off and one black
+column is added, so the letters sit in the middle. The square is opaque, so it looks the same on any background.
 
 ## Build
 
@@ -36,8 +37,8 @@ Needs macOS on Apple silicon, JDK 25 and Xcode's command line tools (`clang`):
 ```
 
 In the development repository: `cd mod/mcms-metal && JAVA_HOME=$PWD/../../.tools/jdk-25/Contents/Home ./gradlew build`.
-Gradle fetches the mixin targets (Sodium 0.9.3-alpha.1, Vitrail 0.12.0-beta, Distant Horizons 3.3.4) from Modrinth's
-Maven by version id; they are compile-only and do not ship in the jar. The jar (`build/libs/quicksilver-0.1.0.jar`) packs
+Gradle fetches the mixin targets (Sodium 0.9.3-beta.1, Vitrail 0.13.0-beta, Distant Horizons 3.3.4) from Modrinth's
+Maven by version id; they are compile-only and do not ship in the jar. The jar (`build/libs/quicksilver-0.1.1.jar`) packs
 `natives/libmcmsmetal.dylib` (built by `clang` from `src/main/native/mcmetal.m`), `LICENSE`, `NOTICE`, `LICENSE-GPL-3.0`
 and `LICENSE-LGPL-3.0`.
 
@@ -157,7 +158,7 @@ mip chain through its `MipmapCommands` interface, which it adds to Vulkan's enco
 and integer formats answer false, and Vitrail then keeps reading them at the base level, as before. Without the
 chain, BSL's exposure read one pixel and its End came out darker on Metal (`results/2026-10-11-m0c-dims`).
 
-Sodium's arena textures (RIL-477, applied only when Sodium is loaded): Sodium 0.9.3-alpha.1's `BufferArena` constructor
+Sodium's arena textures (RIL-477, applied only when Sodium is loaded): Sodium 0.9.3's `BufferArena` constructor (alpha.1 and beta.1)
 registers a 200x200 debug-map `DynamicTexture` in the game's `TextureManager` under a name made from the arena's identity
 hash, and nothing in Sodium releases it, so every arena left one behind until shutdown (278,528 bytes of Metal texture plus
 160,000 bytes of CPU pixels; three per long teleport in the soak, `results/2026-10-13-m5-texlog`). `SodiumBufferArenaAccessor`

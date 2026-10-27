@@ -30,7 +30,7 @@ public final class QuicksilverSodiumPage implements ConfigEntryPoint {
 	/** Sodium's General page row for the game's Options.preferredGraphicsBackend() (SodiumConfigBuilder.buildGeneralPage). */
 	private static final Identifier GRAPHICS_API = Identifier.fromNamespaceAndPath("sodium", "general.graphics_api");
 	private static final Identifier ICON = Identifier.fromNamespaceAndPath("quicksilver", "icon.png");
-	/** The silver of the chrome icon (RGB; Sodium adds the alpha). */
+	/** Silver, after the name (RGB; Sodium adds the alpha). */
 	private static final int THEME = 0xC9CED6;
 
 	@Override

@@ -2,7 +2,7 @@ plugins {
 	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 }
 
-version = '0.1.0'
+version = '0.1.1'
 group = 'dev.mcms'
 
 // The public name (chosen 2026-10-16): the jar is quicksilver-<version>.jar. The Gradle project keeps the folder's name.
@@ -28,8 +28,8 @@ dependencies {
 	minecraft "com.mojang:minecraft:${minecraft_version}"
 	implementation "net.fabricmc:fabric-loader:${loader_version}"
 	// The mixin targets. Minecraft 26.x is unobfuscated, so these jars compile as they are.
-	compileOnly 'maven.modrinth:sodium:v4PSXean'           // Sodium 0.9.3-alpha.1+mc26.3
-	compileOnly 'maven.modrinth:vitrail-shaders:Ul13RHiD'  // Vitrail 0.12.0-beta+mc26.3
+	compileOnly 'maven.modrinth:sodium:g6ju16VJ'           // Sodium 0.9.3-beta.1+mc26.3 (pin since ADR 0003)
+	compileOnly 'maven.modrinth:vitrail-shaders:Q3nKuPKJ'  // Vitrail 0.13.0-beta+mc26.3 (pin since ADR 0003)
 	// Not a project pin: the Distant Horizons release that DistantHorizonsRenderApiMixin targets.
 	compileOnly 'maven.modrinth:distanthorizons:TGgEbP9A'  // Distant Horizons 3.3.4 for 26.3
 }
