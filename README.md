@@ -12,9 +12,13 @@ Source: this is the folder `mod/mcms-metal` of the MC Metal Shaders development 
 is public at https://github.com/momoshamiko/quicksilver, one snapshot per released jar. Paths below that start with
 `docs/`, `bench/`, `results/` or `vendor/`, and the `RIL-` issue numbers, point into that repository and its tracker.
 
+`.github/workflows/build.yml` builds each release jar on GitHub Actions from tag `v<version>`. The Modrinth file is
+that release asset, and its `SHA256SUMS` gives the jar's hash (the packed `natives/libmcmsmetal.dylib` hash sits in
+`libmcmsmetal.dylib.sha256`).
+
 Names: the public name is Quicksilver (chosen 2026-10-16). Players see it as the mod id `quicksilver`, the shown
 name "Quicksilver", the jar `quicksilver-<version>.jar`, the driver string in the game's log ("Using graphics backend Metal,
-using drivers: Metal (Quicksilver 0.1.1, from mcopt 0.3.0-alpha.2)") and the MSL cache folder `<game dir>/quicksilver/`.
+using drivers: Metal (Quicksilver 0.1.2, from mcopt 0.3.0-alpha.2)") and the MSL cache folder `<game dir>/quicksilver/`.
 The project's internal name stays where players choose nothing: this folder, the package `dev.mcms.metal`, the
 `-Dmcms.metal.*` properties, the mixin config `mcms-metal.mixins.json`, the native library `libmcmsmetal.dylib`, and the
 `mcms-metal` tag at the start of the backend's log lines and error messages (bench scripts such as `bench/soak_check.py`
@@ -38,7 +42,7 @@ Needs macOS on Apple silicon, JDK 25 and Xcode's command line tools (`clang`):
 
 In the development repository: `cd mod/mcms-metal && JAVA_HOME=$PWD/../../.tools/jdk-25/Contents/Home ./gradlew build`.
 Gradle fetches the mixin targets (Sodium 0.9.3-beta.1, Vitrail 0.13.0-beta, Distant Horizons 3.3.4) from Modrinth's
-Maven by version id; they are compile-only and do not ship in the jar. The jar (`build/libs/quicksilver-0.1.1.jar`) packs
+Maven by version id; they are compile-only and do not ship in the jar. The jar (`build/libs/quicksilver-0.1.2.jar`) packs
 `natives/libmcmsmetal.dylib` (built by `clang` from `src/main/native/mcmetal.m`), `LICENSE`, `NOTICE`, `LICENSE-GPL-3.0`
 and `LICENSE-LGPL-3.0`.
 

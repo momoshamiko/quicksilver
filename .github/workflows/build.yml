@@ -1,0 +1,86 @@
+name: build
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: '25.0.5+8'
+      - name: Pin the Xcode toolchain
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+      - name: Toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcrun --show-sdk-version
+          clang --version
+          java -version
+      - name: Version from build.gradle
+        id: version
+        run: echo "version=$(sed -n "s/^version = '\(.*\)'\$/\1/p" build.gradle)" >> "$GITHUB_OUTPUT"
+      - name: Build
+        run: ./gradlew --no-daemon clean build
+      - name: Checksums
+        run: |
+          cp build/libs/quicksilver-*.jar .
+          jar=$(ls quicksilver-*.jar)
+          shasum -a 256 "$jar" > SHA256SUMS
+          unzip -o -j "$jar" natives/libmcmsmetal.dylib -d .
+          {
+            echo "# natives/libmcmsmetal.dylib is packed inside $jar; extracted for this hash."
+            shasum -a 256 libmcmsmetal.dylib | sed 's|  libmcmsmetal.dylib|  natives/libmcmsmetal.dylib|'
+          } > libmcmsmetal.dylib.sha256
+          cat SHA256SUMS libmcmsmetal.dylib.sha256
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: quicksilver
+          path: |
+            quicksilver-*.jar
+            SHA256SUMS
+            libmcmsmetal.dylib.sha256
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-26.04-arm
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: The tag must match build.gradle
+        run: |
+          if [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+            echo "tag $GITHUB_REF_NAME does not match version $VERSION in build.gradle" >&2
+            exit 1
+          fi
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: quicksilver
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" quicksilver-*.jar SHA256SUMS libmcmsmetal.dylib.sha256 \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "Quicksilver $VERSION" \
+            --notes "Built by this repository's GitHub Actions workflow (.github/workflows/build.yml) from commit $GITHUB_SHA."
