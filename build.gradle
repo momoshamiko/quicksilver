@@ -2,7 +2,7 @@ plugins {
 	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 }
 
-version = '0.1.2'
+version = '0.2.0'
 group = 'dev.mcms'
 
 // The public name (chosen 2026-10-16): the jar is quicksilver-<version>.jar. The Gradle project keeps the folder's name.
@@ -22,6 +22,20 @@ repositories {
 		}
 		filter { includeGroup 'maven.modrinth' }
 	}
+	// JUnit for the shader engine's tests (ADR 0006); test-only, nothing of it ships in the jar.
+	mavenCentral {
+		content { includeGroupByRegex 'org\\.(junit|opentest4j|apiguardian)(\\..*)?' }
+	}
+}
+
+configurations {
+	// The second Sodium pass of the mixin audit (MixinAuditTest, ADR 0007). Its jars reach the test only through the audit's own
+	// classloader, so no test classpath holds beta.5 and beta.1 together.
+	mixinAuditSodiumBeta5 {
+		canBeResolved = true
+		canBeConsumed = false
+		transitive = false
+	}
 }
 
 dependencies {
@@ -29,22 +43,32 @@ dependencies {
 	implementation "net.fabricmc:fabric-loader:${loader_version}"
 	// The mixin targets. Minecraft 26.x is unobfuscated, so these jars compile as they are.
 	compileOnly 'maven.modrinth:sodium:g6ju16VJ'           // Sodium 0.9.3-beta.1+mc26.3 (pin since ADR 0003)
-	compileOnly 'maven.modrinth:vitrail-shaders:Q3nKuPKJ'  // Vitrail 0.13.0-beta+mc26.3 (pin since ADR 0003)
 	// Not a project pin: the Distant Horizons release that DistantHorizonsRenderApiMixin targets.
 	compileOnly 'maven.modrinth:distanthorizons:TGgEbP9A'  // Distant Horizons 3.3.4 for 26.3
+	// The mixin audit (MixinAuditTest) reads the targets' bytecode from the test classpath; no test starts the game.
+	testImplementation 'maven.modrinth:sodium:g6ju16VJ'
+	testImplementation 'maven.modrinth:distanthorizons:TGgEbP9A'
+	// ADR 0007: Sodium 0.9.3-beta.5 is the second allowed release. It never shares a test classpath with beta.1: the tests that
+	// need it load it from this configuration, through their own classloaders (the system property and the audit's second pass).
+	mixinAuditSodiumBeta5 'maven.modrinth:sodium:v7Lw0h1m'  // Sodium 0.9.3-beta.5+mc26.3 (bench/mods.lock.json)
+	testImplementation platform('org.junit:junit-bom:6.1.3')
+	testImplementation 'org.junit.jupiter:junit-jupiter'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 def nativeOut = layout.buildDirectory.dir('natives/natives')
 
-// mcopt's clang flags (vendor/mcopt/metal/build.gradle), this backend's one translation unit only.
+// mcopt's clang flags (vendor/mcopt/metal/build.gradle): the backend (mcmetal.m) and the shader engine's native side (mcshaders.m,
+// ADR 0006) in one image. MetalFX (ADR 0008, the engine's spatial scaler) is in macOS since 13, below the image's minimum.
 tasks.register('compileNative', Exec) {
-	def sources = ['mcmetal.m'].collect { file("src/main/native/$it") }
+	def sources = ['mcmetal.m', 'mcshaders.m'].collect { file("src/main/native/$it") }
 	def output = nativeOut.get().file('libmcmsmetal.dylib').asFile
-	inputs.files sources, file('src/main/native/mcmetal.h')
+	inputs.files sources, file('src/main/native/mcmetal.h'), file('src/main/native/mcshaders.h')
 	outputs.file output
 	doFirst { output.parentFile.mkdirs() }
 	commandLine(['clang', '-fno-objc-arc', '-O2', '-Wall', '-arch', 'arm64', '-mmacosx-version-min=15.0', '-dynamiclib', '-install_name', '@rpath/libmcmsmetal.dylib',
-		'-framework', 'AppKit', '-framework', 'CoreGraphics', '-framework', 'CoreVideo', '-framework', 'Foundation', '-framework', 'Metal', '-framework', 'QuartzCore', '-o', output] + sources)
+		'-framework', 'AppKit', '-framework', 'CoreGraphics', '-framework', 'CoreVideo', '-framework', 'Foundation', '-framework', 'Metal',
+		'-framework', 'MetalFX', '-framework', 'QuartzCore', '-o', output] + sources)
 }
 
 processResources {
@@ -55,12 +79,118 @@ processResources {
 }
 
 jar {
-	// Apache-2.0 asks for LICENSE and NOTICE in every copy. LGPL-3.0 §4b asks for the GPL and LGPL texts with the four files
-	// adapted from Vitrail (README.md, Licences).
+	// Apache-2.0 asks for LICENSE and NOTICE in every copy.
 	from(rootProject.file('LICENSE'))
 	from(rootProject.file('NOTICE'))
-	from(rootProject.file('LICENSE-GPL-3.0'))
-	from(rootProject.file('LICENSE-LGPL-3.0'))
 }
 
 tasks.withType(JavaCompile).configureEach { it.options.release = 25 }
+
+// The shader engine's tests (ADR 0006, docs/engine/plan.md). Plain unit tests always run, in CI too. The corpus suite (tag
+// "corpus") reads the eight packs from a local folder, -Pcorpus=<dir> (the packs are never committed); the GPU suite (tag "gpu")
+// needs Metal on Apple silicon and the repository's bench/test-packs, -PgpuTests, so the public source runs the plain tests only.
+// The native library reaches the tests through the main resources (processResources).
+test {
+	useJUnitPlatform {
+		if (!project.hasProperty('corpus')) excludeTags 'corpus'
+		if (!project.hasProperty('gpuTests')) excludeTags 'gpu'
+	}
+	if (project.hasProperty('corpus')) systemProperty 'mcms.test.corpus', file(project.property('corpus')).absolutePath
+	// The two Sodium jars ADR 0007 allows, for the terrain tests (globals std140, the adapter lookups, the encoder
+	// differential): beta.1 from the compile classpath (the pin), beta.5 from mixinAuditSodiumBeta5 (never on the test classpath).
+	doFirst {
+		def sodiumJar = { config, id -> config.files.find { it.name.endsWith(".jar") && it.name.contains(id) } }
+		def beta1 = sodiumJar(configurations.compileClasspath, 'g6ju16VJ')
+		def beta5 = sodiumJar(configurations.mixinAuditSodiumBeta5, 'v7Lw0h1m')
+		if (beta1 != null) systemProperty 'mcms.test.sodium.beta1', beta1.absolutePath
+		if (beta5 != null) systemProperty 'mcms.test.sodium.beta5', beta5.absolutePath
+	}
+	// The E1 report (E1ReportTest) is written to this folder: -Pe1Report=<dir>. Without it, build/reports/e1.
+	if (project.hasProperty('e1Report')) systemProperty 'e1.report', file(project.property('e1Report')).absolutePath
+	// The corpus and the GPU are inputs Gradle cannot see: never report those runs up to date.
+	if (project.hasProperty('corpus') || project.hasProperty('gpuTests')) outputs.upToDateWhen { false }
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+	maxHeapSize = '2g'
+	// The audit's beta.5 pass gets its own classpath, from these paths only: the beta.5 jar, Minecraft and the mod's classes.
+	inputs.files project.configurations.mixinAuditSodiumBeta5
+	doFirst { Test t ->
+		def minecraft = project.configurations.testRuntimeClasspath.files.findAll { it.name.startsWith('minecraft-merged-deobf') }
+		if (minecraft.isEmpty()) {
+			throw new GradleException('the Minecraft jar is not on the test classpath')
+		}
+		def paths = project.configurations.mixinAuditSodiumBeta5.files + minecraft + project.sourceSets.main.output.files
+		t.systemProperty 'mcms.audit.sodiumBeta5', paths.collect { it.absolutePath }.join(File.pathSeparator)
+	}
+	testLogging {
+		events 'failed', 'skipped'
+		exceptionFormat 'full'
+	}
+}
+
+// Provenance check for the shader engine (docs/research/engine-provenance.md, ADR 0006): no Vitrail, Iris or OptiFine names in
+// any engine file, and no game, LWJGL, Fabric, Sodium, Mixin or backend names in the pure packages (dev.mcms.glsl,
+// dev.mcms.shaders.pack, dev.mcms.shaders.expr), whose tests run without the game.
+tasks.register('checkEngineImports') {
+	def engineTrees = ['main', 'test'].collectMany { set -> ["src/$set/java/dev/mcms/glsl", "src/$set/java/dev/mcms/shaders"] }.collect { fileTree(it) } +
+		['main', 'test'].collectMany { set -> ["src/$set/resources/dev/mcms/glsl", "src/$set/resources/dev/mcms/shaders"] }.collect {
+			fileTree(it) { include '**/*.glsl', '**/*.vsh', '**/*.fsh', '**/*.csh', '**/*.gsh', '**/*.metal', '**/*.properties', '**/*.txt', '**/*.json', '**/*.lang' }
+		}
+	def pureTrees = ['main', 'test'].collectMany { set -> ["src/$set/java/dev/mcms/glsl", "src/$set/java/dev/mcms/shaders/pack", "src/$set/java/dev/mcms/shaders/expr"] }.collect { fileTree(it) }
+	def engineMixins = fileTree('src/main/java/dev/mcms/metal/mixin') { include 'Engine*.java', 'SodiumEngine*.java', 'DistantHorizonsEngine*.java' }
+	def nativeFiles = files('src/main/native/mcshaders.m')
+	inputs.files(engineTrees, engineMixins, nativeFiles)
+	def stamp = layout.buildDirectory.file('checkEngineImports.ok')
+	outputs.file stamp
+	doLast {
+		def forbidden = ~/\b(dev\.vitrail|net\.irisshaders|net\.coderbot|net\.optifine|dev\.mcms\.metal\.vitrail)\b/
+		def impure = ~/\b(net\.minecraft|com\.mojang|org\.lwjgl|net\.fabricmc|net\.caffeinemc|org\.spongepowered|dev\.mcms\.metal|dev\.mcms\.shaders\.(?:runtime|standardroad|metal|ui))\b/
+		def problems = []
+		def scan = { File f, pattern, String why ->
+			f.readLines('UTF-8').eachWithIndex { line, i ->
+				def m = line =~ pattern
+				if (m.find()) problems << "${projectDir.toPath().relativize(f.toPath())}:${i + 1}: ${m.group(1)} ($why)"
+			}
+		}
+		(engineTrees.collectMany { it.files as List } + (engineMixins.files as List) + (nativeFiles.files.findAll { it.exists() } as List)).each { scan(it, forbidden, 'not allowed in engine code') }
+		pureTrees.collectMany { it.files as List }.each { scan(it, impure, 'not allowed in a pure package') }
+		if (problems) throw new GradleException("Engine provenance check failed (docs/research/engine-provenance.md):\n" + problems.join('\n'))
+		stamp.get().asFile.text = 'ok\n'
+	}
+}
+tasks.named('check') { dependsOn 'checkEngineImports' }
+
+// ADR 0007 decision 2: the engine's Sodium-facing classes compile against both allowed jars. The pin (beta.1) is the
+// normal compile; this check javac-compiles the Sodium-facing sources again with beta.5 first on the classpath, so a
+// member that moved between the releases fails the build here instead of the game.
+tasks.register('checkSodiumReleases') {
+	// Compiles the Sodium-facing sources against beta.5 alone: the beta.1 pin is left off this classpath, so a class that
+	// exists only on beta.1 cannot resolve here (E4-B review item 13).
+	dependsOn 'classes'
+	def sources = fileTree('src/main/java') {
+		include 'dev/mcms/shaders/runtime/terrain/**'
+		include 'dev/mcms/metal/mixin/SodiumEngine*.java'
+		// E5 (review item 1): the shadow pass calls Sodium's globals update and the terrain traversal; a beta.1-only call
+		// there is a NoSuchMethodError in the game, so the shadow package compiles against beta.5 as well.
+		include 'dev/mcms/shaders/runtime/shadow/**'
+	}
+	inputs.files sources
+	outputs.upToDateWhen { false }
+	doLast {
+		def beta5 = configurations.mixinAuditSodiumBeta5.files.find { it.name.endsWith('.jar') && it.name.contains('v7Lw0h1m') }
+		if (beta5 == null) throw new GradleException('the beta.5 jar (v7Lw0h1m) is not in the mixinAuditSodiumBeta5 configuration')
+		def out = layout.buildDirectory.dir('checkSodiumReleases').get().asFile
+		out.mkdirs()
+		def mainClasses = sourceSets.main.output.files.findAll { it.isDirectory() }.join(File.pathSeparator)
+		def pinJar = configurations.compileClasspath.files.find { it.name.endsWith('.jar') && it.name.contains('g6ju16VJ') }
+		def cp = [beta5.absolutePath, mainClasses] + configurations.compileClasspath.files.findAll { it != pinJar }.collect { it.absolutePath }
+		def javac = new File(org.gradle.internal.jvm.Jvm.current().getJavaHome(), 'bin/javac').absolutePath
+		def cmd = [javac, '--release', '25', '-nowarn', '-d', out.absolutePath, '-cp', cp.join(File.pathSeparator)]
+		sources.each { File f -> cmd.add(f.absolutePath) }
+		def result = new ProcessBuilder(cmd).redirectErrorStream(true).start()
+		def text = result.inputStream.text
+		if (result.waitFor() != 0) {
+			throw new GradleException("the Sodium-facing classes do not compile against beta.5 (ADR 0007):\n" + text)
+		}
+	}
+}
+tasks.named('check') { dependsOn 'checkSodiumReleases' }

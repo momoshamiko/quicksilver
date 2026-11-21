@@ -7,12 +7,15 @@
  * allocated off LWJGL's MemoryStack (Complementary's programs overflow its 64 KB); depth-reference reads get a constexpr comparison
  * sampler (compareSamplers). 2026-10-12 (M4): each stage's samplers are numbered without gaps and a texture a stage only fetches from
  * gets a constexpr sampler (samplerSlots, fetchSamplers), so stages that declare more than 16 samplers build; TRANSLATION_VERSION 3.
- * After M5 (2026-10-14): a vertex function writes point_size only in a pipeline that draws points (SPIRV-Cross's
- * enable_point_size_builtin, as MoltenVK sets it): Metal refuses a line or triangle pipeline whose vertex function writes it
  * ("Vertex shader writes point size but inputPrimitiveTopology is MTLPrimitiveTopologyClassLine", malilib's debug lines).
  * 2026-10-16: the MSL disk cache lives under <game dir>/quicksilver/msl-cache, the mod's public name.
  * 2026-10-19 (RIL-495): fragment outputs are padded to four components (SPIRV-Cross's pad_fragment_output_components, as MoltenVK
  * sets it), so a fragment function that writes fewer components than its target's pixel format builds; TRANSLATION_VERSION 4.
+ * 2026-11-14 (E4): the pipeline keeps its vertex bindings' strides (vertexStrides, MetalBridge.pipelineStrides) — 26.3
+ * registers three pipelines under pipeline/item_cutout with two different vertex formats, and the shader engine's plan
+ * lookup tells them apart by these strides.
+ * E10 (ADR 0006): dumpDir and dumpOne went with the Vitrail compute path (MetalCompute) that called them; the comments no
+ * longer name Vitrail as the frontend.
  */
 package dev.mcms.metal;
 import com.mojang.renderpearl.api.pipeline.BindGroupLayout;
@@ -71,6 +74,8 @@ final class MetalPipeline implements BackendRenderPipeline {
 	final boolean wireframe;
 	final float depthBiasConstant;
 	final float depthBiasSlope;
+	/** The strides of the pipeline's vertex bindings (26.3's three pipeline/item_cutout s share a name but not these). */
+	final int[] vertexStrides;
 	final int primitive;
 	final String name;
 	private final MetalEncoder encoder;
@@ -80,6 +85,8 @@ final class MetalPipeline implements BackendRenderPipeline {
 		this.encoder = encoder;
 		this.withDepth = withDepth;
 		this.withoutDepth = withoutDepth;
+		this.vertexStrides = info.vertexBuffers().stream()
+			.mapToInt(BackendRenderPipeline.CreateInfo.VertexBuffer::stride).toArray();
 		this.depthState = depthState;
 		this.name = info.name();
 		this.uniforms = info.uniforms();
@@ -91,6 +98,35 @@ final class MetalPipeline implements BackendRenderPipeline {
 		this.primitive = MetalConst.primitive(info.primitiveTopology());
 		this.vertexSamplers = vertexSamplers;
 		this.fragmentSamplers = fragmentSamplers;
+	}
+
+	/**
+	 * A pipeline object with no GPU state (2026-11-14, E4 clouds): a delegated pass's path reads only the name and the
+	 * uniform list ({@code MetalRenderPass.setPipeline} hands both to the delegate, which binds its own pipeline), so
+	 * the clouds' GPU-test drives the backend's real pass entry points with this instead of a compiled SPIR-V pair.
+	 */
+	static MetalPipeline detached(String name, List<BindGroupLayout.UniformDescription> uniforms) {
+		CreateInfo info = new CreateInfo(name, List.of(), List.of(), List.of(), List.copyOf(uniforms), 0, null,
+			PolygonMode.FILL, false, List.of(), PrimitiveTopology.TRIANGLES);
+		return new MetalPipeline(null, 0, 0, 0, info, new int[0], new int[0]);
+	}
+
+	/**
+	 * A pipeline object over Metal states a test built (the phase split's GPU test: a game-pipeline variant draws with its
+	 * state, which the backend's pass hands to the delegate). The delegate maps it by its name and uniform list, as it does
+	 * {@link #detached}'s.
+	 */
+	static MetalPipeline withStates(String name, List<BindGroupLayout.UniformDescription> uniforms, long withDepth,
+			long withoutDepth) {
+		return withStates(name, uniforms, withDepth, withoutDepth, new int[0], new int[0]);
+	}
+
+	/** 2026-11-15 (E6): {@link #withStates} with the per-stage sampler slots of each uniform (-1: that stage samples none). */
+	static MetalPipeline withStates(String name, List<BindGroupLayout.UniformDescription> uniforms, long withDepth,
+			long withoutDepth, int[] vertexSamplers, int[] fragmentSamplers) {
+		CreateInfo info = new CreateInfo(name, List.of(), List.of(), List.of(), List.copyOf(uniforms), 0, null,
+			PolygonMode.FILL, false, List.of(), PrimitiveTopology.TRIANGLES);
+		return new MetalPipeline(null, withDepth, withoutDepth, 0, info, vertexSamplers.clone(), fragmentSamplers.clone());
 	}
 
 	/** Time spent creating pipelines so far, by step, for the bench's startup breakdown (read reflectively). */
@@ -188,20 +224,6 @@ final class MetalPipeline implements BackendRenderPipeline {
 			Files.createDirectories(Path.of(DUMP_DIR));
 			Files.writeString(Path.of(DUMP_DIR, fileName(name) + ".vs.metal"), v.msl);
 			Files.writeString(Path.of(DUMP_DIR, fileName(name) + ".fs.metal"), f.msl);
-		} catch (IOException e) {
-			throw new UncheckedIOException(e);
-		}
-	}
-
-	/** -Dmcms.metal.dumpMsl's directory, or null; MetalCompute dumps its kernels there too. */
-	static @Nullable String dumpDir() {
-		return DUMP_DIR;
-	}
-
-	static void dumpOne(String name, String msl) {
-		try {
-			Files.createDirectories(Path.of(DUMP_DIR));
-			Files.writeString(Path.of(DUMP_DIR, fileName(name)), msl);
 		} catch (IOException e) {
 			throw new UncheckedIOException(e);
 		}
@@ -381,11 +403,11 @@ final class MetalPipeline implements BackendRenderPipeline {
 	}
 
 	/**
-	 * A depth-reference read (GLSL sampler2DShadow, which Vitrail keeps wherever a pack asks for hardware shadow filtering) becomes
-	 * sample_compare on a depth2d, which needs a sampler with a compare function. renderpearl's GpuSampler cannot describe one, so
-	 * every sampler bound through it compares with Metal's default "never" and every such read answers 0: the whole scene in shadow.
-	 * The sampler of each depth image becomes an MSL constexpr sampler instead, the one Vitrail binds for the same reads on Vulkan
-	 * (ShadowCompare.sampler): linear, clamp to edge, compare LEQUAL, base level only. The texture stays at its slot; the sampler
+	 * A depth-reference read (GLSL sampler2DShadow) becomes sample_compare on a depth2d, which needs a sampler with a compare
+	 * function. renderpearl's GpuSampler cannot describe one, so every sampler bound through it compares with Metal's default
+	 * "never" and every such read answers 0: the whole scene in shadow. The sampler of each depth image becomes an MSL constexpr
+	 * sampler instead (until E10, the one Vitrail bound for the same reads on Vulkan, ShadowCompare.sampler): linear, clamp to
+	 * edge, compare LEQUAL, base level only. The texture stays at its slot; the sampler
 	 * bound at that slot is not read.
 	 */
 	static void compareSamplers(MemoryStack stack, long context, long compiler) {
@@ -417,7 +439,7 @@ final class MetalPipeline implements BackendRenderPipeline {
 	 * with fewer than 16 samplers (Complementary's VERYHIGH composite1, its ULTRA composite). Depth images take the constant
 	 * comparison sampler (compareSamplers) and textures the stage only fetches from a constant one (fetchSamplers), neither a slot.
 	 * A stage that samples more than 16 textures cannot be built without argument buffers, which this backend does not make: it is
-	 * refused here with the names, and Vitrail stops drawing the pack and says so (spec S5).
+	 * refused here with the names (spec S5).
 	 */
 	static int[] samplerSlots(String pipeline, String stage, SpirvResources resources, int bindings) {
 		int[] slots = new int[bindings];

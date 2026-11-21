@@ -1,7 +1,8 @@
 // Derived from mcopt v0.3.0-alpha.2 (https://github.com/noahdunnagan/mcopt), metal/src/main/native/mcmetal.h.
 // Copyright Noah Dunnagan, Apache License 2.0. Changed by MC Metal Shaders, 2026-10-11: provenance comment and Enc.committedEarly
 // (mc_enc_commit_early) added. 2026-10-12 (M4): Ctx.clearKernels (storage image clears) and Enc.compute (the frame's compute encoder
-// for a pack's compute passes and those clears) added. After M5: Enc.blitGroup (the frame blit encoder's profiling group).
+// for a pack's compute passes and those clears) added; Ctx.clearKernels removed at E10 with the storage images it cleared. After M5:
+// Enc.blitGroup (the frame blit encoder's profiling group).
 // Shared between mcmetal.m (the backend), mcterrain.m (terrain culling) and mcprobe.m (the debug visibility probe).
 #import <Metal/Metal.h>
 
@@ -14,8 +15,6 @@ typedef struct {
 	NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *clearPipelines;  // keyed by attachment formats
 	id<MTLDepthStencilState> depthWrite, depthKeep;
 	id<MTLBuffer> fanIndices;  // {0, k+1, k+2} per triangle: Metal has no fans, so they're drawn as indexed triangle lists
-	// M4: zero-fill kernels for storage images, made at first use: [kind * 3 + dims - 1], kind 0 float, 1 uint, 2 sint
-	id<MTLComputePipelineState> clearKernels[9];
 } Ctx;
 
 #define MAX_COLORS 8

@@ -73,7 +73,7 @@ public final class MetalSupport {
 					case NOT_MACOS -> "Metal runs only on macOS, and this is " + name;
 					case NOT_APPLE_SILICON -> "its Metal library is for Apple silicon, and this Java runs on " + arch;
 					case MACOS_TOO_OLD -> "it needs macOS 15 or newer, and this is macOS " + version;
-					case IRIS -> "Iris is installed, and Iris draws only through OpenGL (for shader packs on Metal, use Vitrail instead of Iris)";
+					case IRIS -> "Iris is installed, and Iris draws only through OpenGL (for shader packs on Metal, remove Iris: Quicksilver draws them itself)";
 				};
 				LOG.info("Quicksilver: Metal stays off, so the game starts with its own graphics backends: {}", why);
 			}

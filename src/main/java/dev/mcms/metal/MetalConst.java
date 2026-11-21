@@ -1,7 +1,7 @@
 /*
  * Derived from mcopt v0.3.0-alpha.2 (https://github.com/noahdunnagan/mcopt), metal/src/main/java/mcopt/metal/MetalConst.java.
  * Copyright Noah Dunnagan, Apache License 2.0. Changed by MC Metal Shaders, 2026-10-11: package renamed to dev.mcms.metal;
- * mipmapReducible added.
+ * mipmapReducible added, and removed at E10 with the Vitrail mip-chain request it served.
  */
 package dev.mcms.metal;
 
@@ -200,16 +200,5 @@ final class MetalConst {
 
 	static int filter(FilterMode mode) {
 		return mode == FilterMode.LINEAR ? 1 : 0;
-	}
-
-	/** MC Metal Shaders: formats Metal's mip generation can reduce, colour and filterable: no depth, stencil or integer. */
-	static boolean mipmapReducible(GpuFormat format) {
-		if (!format.hasColorAspect() || format.hasDepthAspect() || format.hasStencilAspect()) return false;
-		return switch (format) {
-			case R8_UINT, R8_SINT, RG8_UINT, RG8_SINT, RGB8_UINT, RGB8_SINT, RGBA8_UINT, RGBA8_SINT, R16_UINT, R16_SINT, RG16_UINT,
-				RG16_SINT, RGB16_UINT, RGB16_SINT, RGBA16_UINT, RGBA16_SINT, R32_UINT, R32_SINT, RG32_UINT, RG32_SINT, RGB32_UINT,
-				RGB32_SINT, RGBA32_UINT, RGBA32_SINT, RGB10A2_UINT -> false;
-			default -> true;
-		};
 	}
 }

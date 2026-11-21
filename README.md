@@ -1,12 +1,11 @@
 # Quicksilver (`mod/mcms-metal`)
 
 A native Metal backend for Minecraft's renderpearl layer (Minecraft 26.3, Fabric, Java 25), cut from
-[mcopt](https://github.com/noahdunnagan/mcopt) v0.3.0-alpha.2 (Apache-2.0). Where Metal can run (see "Where Metal runs"), it
-puts Metal first in the game's backend list, with OpenGL and Vulkan (MoltenVK) behind it as fallbacks. Mixins make the seams around it work:
-Sodium draws through its Vulkan multi-draw path on Metal, Vitrail's shader engine runs instead of turning itself
-off on a non-Vulkan backend, Vitrail can fill the mip chains of a pack's colour targets on Metal, since M4
-Vitrail's compute passes, storage images and storage buffers run on Metal, Sodium's geometry arenas release the
-debug-map texture each one registers when Sodium deletes them, and Distant Horizons takes the paths it takes on Vulkan.
+[mcopt](https://github.com/noahdunnagan/mcopt) v0.3.0-alpha.2 (Apache-2.0), with its own engine for OptiFine and Iris shader
+packs (ADR 0006). Where Metal can run (see "Where Metal runs"), it puts Metal first in the game's backend list, with OpenGL and
+Vulkan (MoltenVK) behind it as fallbacks. Mixins make the seams around it work: Sodium draws through its Vulkan multi-draw path
+on Metal, Sodium's geometry arenas release the debug-map texture each one registers when Sodium deletes them, and Distant
+Horizons takes the paths it takes on Vulkan.
 
 Source: this is the folder `mod/mcms-metal` of the MC Metal Shaders development repository, which is private. Its source
 is public at https://github.com/momoshamiko/quicksilver, one snapshot per released jar. Paths below that start with
@@ -18,7 +17,7 @@ that release asset, and its `SHA256SUMS` gives the jar's hash (the packed `nativ
 
 Names: the public name is Quicksilver (chosen 2026-10-16). Players see it as the mod id `quicksilver`, the shown
 name "Quicksilver", the jar `quicksilver-<version>.jar`, the driver string in the game's log ("Using graphics backend Metal,
-using drivers: Metal (Quicksilver 0.1.2, from mcopt 0.3.0-alpha.2)") and the MSL cache folder `<game dir>/quicksilver/`.
+using drivers: Metal (Quicksilver 0.2.0, from mcopt 0.3.0-alpha.2)") and the MSL cache folder `<game dir>/quicksilver/`.
 The project's internal name stays where players choose nothing: this folder, the package `dev.mcms.metal`, the
 `-Dmcms.metal.*` properties, the mixin config `mcms-metal.mixins.json`, the native library `libmcmsmetal.dylib`, and the
 `mcms-metal` tag at the start of the backend's log lines and error messages (bench scripts such as `bench/soak_check.py`
@@ -41,14 +40,13 @@ Needs macOS on Apple silicon, JDK 25 and Xcode's command line tools (`clang`):
 ```
 
 In the development repository: `cd mod/mcms-metal && JAVA_HOME=$PWD/../../.tools/jdk-25/Contents/Home ./gradlew build`.
-Gradle fetches the mixin targets (Sodium 0.9.3-beta.1, Vitrail 0.13.0-beta, Distant Horizons 3.3.4) from Modrinth's
-Maven by version id; they are compile-only and do not ship in the jar. The jar (`build/libs/quicksilver-0.1.2.jar`) packs
-`natives/libmcmsmetal.dylib` (built by `clang` from `src/main/native/mcmetal.m`), `LICENSE`, `NOTICE`, `LICENSE-GPL-3.0`
-and `LICENSE-LGPL-3.0`.
+Gradle fetches the mixin targets (Sodium 0.9.3-beta.1, Distant Horizons 3.3.4) from Modrinth's Maven by version id; they
+are compile-only and do not ship in the jar. The jar (`build/libs/quicksilver-0.2.0.jar`) packs `natives/libmcmsmetal.dylib`
+(built by `clang` from `src/main/native/mcmetal.m` and `mcshaders.m`), `LICENSE` and `NOTICE`.
 
 ## Settings
 
-With Sodium installed, Quicksilver has a page in Options, Video Settings, next to Vitrail's (ADR 0002,
+With Sodium installed, Quicksilver has a page in Options, Video Settings (ADR 0002,
 `docs/decisions/0002-settings-page.md`; `QuicksilverSodiumPage`, through Sodium's config API, entrypoint
 `sodium:config_api_user`):
 
@@ -74,6 +72,34 @@ which an untagged layer looks like). Without a `hud` key the HUD setting follows
 and a launcher value other than `1` holds the row grey. The benchmark's instances have no such file, so their `-D` configs run
 as before.
 
+### Shaders (the engine's screens)
+
+Quicksilver's own shader engine (ADR 0006; it draws only on Metal) adds a "Shaders"
+group to the page, two screens and three keys (`docs/engine/plan.md` E8):
+
+| Where | What it does |
+| --- | --- |
+| Use shaders (page row) | on, off; at once. Grey under `-Dmcms.shaders` or on another backend; the tooltip says why |
+| Shader packs (page button) | opens the pack screen |
+| Upscaling (page row) | Off (the default), Quality, Performance (ADR 0008): the pack's world draws at the window size divided by 1.5 or 2, and MetalFX's spatial scaler makes the pack's final image full size (the engine's bilinear copy where MetalFX refuses, with one WARN). At once, without a reload. The block atlas and its normal and specular maps take a matching LOD bias. Grey under `-Dmcms.shaders.upscale` |
+| Pack screen (`PackScreen`) | the zips and folders in `<game dir>/shaderpacks/` and "Shaders off"; the chosen pack's state (in use, loading, failed with the reason); Apply, Options, Open folder, Done. A launch flag locks the list and Apply, and a header line names it |
+| Options screen (`OptionsScreen`) | the pack's own screens, built from its `shaders.properties` and lang files; Hand depth (0.0625, 0.125, 0.25) on the main screen; Reset, Cancel, Apply. Apply writes `shaderpacks/<pack>.txt` and reloads the pack when it is the one in use |
+| Keys (Controls, category "Quicksilver shaders") | K toggles the shaders, R reloads the pack, U opens the pack screen; rebindable, saved in `options.txt` |
+
+The file gains `shaders` (on, off), `shaderPack` (a file name in `shaderpacks/`), `handDepth` and `upscale` (off, quality, performance). The page's Apply, the pack
+screen's Apply, the options screen's Apply and the toggle key all save it the same way, and each save writes every key. The
+shader keys set no system property: `-Dmcms.shaders` and `-Dmcms.shaders.pack` win when the launch command sets them, and the
+file's values apply otherwise, read at every frame, so a change applies without a restart. The pack's options file keeps the
+names the pack does not declare when the screen writes it.
+
+Under water (RIL-571): `fabric.mod.json` turns off Sodium's mixin rule `mixin.features.render.world.sky` through Sodium's
+mod overrides (`custom`, `sodium:options`). That mixin makes the game skip its sky pass whenever the camera is in a fluid.
+Iris 1.11.7 turns the same rule off (Sodium's log at start: "added by mods [iris]"), so a pack's sky and stars show from
+under water; without a pack, the game draws its sky under water as it does without Sodium. While a pack draws the world,
+`SodiumEngineFogCullMixin` also turns Sodium's fog occlusion off, so terrain past the game's fog end (the water fog, and
+also the Nether's fog, a boss fog, lava and blindness, not measured) stays drawn, as Iris draws a pack's far terrain
+under water.
+
 ## Where Metal runs
 
 Minecraft 26.3 tries the next backend in its list only when one throws a `BackendCreationException` (`Minecraft.<init>`, javap
@@ -91,6 +117,13 @@ still cannot be made, for example when the library does not load, `MetalBackend.
 | Property | Default | What it does |
 | --- | --- | --- |
 | `mcms.metal` | `true` | `false` opts out of the whole backend (OpenGL/Vulkan as vanilla picks). The settings page's Use Metal row sets it through `config/quicksilver.properties` (Settings above); a launch flag wins |
+| `mcms.shaders` | unset (the file's `shaders`, off without one) | `on` or `off`: the shader engine draws the chosen pack. Wins over the file; the page's row and the toggle key then show it, locked |
+| `mcms.shaders.pack` | unset (the file's `shaderPack`) | the pack's file name in `<game dir>/shaderpacks/`. Wins over the file; the pack screen then shows it, locked |
+| `mcms.shaders.upscale` | unset (the file's `upscale`, off without one) | `off`, `quality` or `performance` (ADR 0008), read every frame: wins over the file while it names a value (the bench harness sets it per scene); the page's row then shows it, locked |
+| `mcms.shaders.upscaler` | `metalfx` | profiling only (ADR 0008): `bilinear` upscales with the engine's copy draw instead of MetalFX, `refuse` makes MetalFX refuse as an unsupported device does (the fallback's own run) |
+| `mcms.shaders.upscaleFactor` | unset | profiling only (ADR 0008's equal-look comparison): a scale above 1 and at most 2 replaces the Upscaling setting's while the setting is not Off |
+| `mcms.shaders.standardRoad`, `mcms.shaders.mathMode` | off, `relaxed` | profiling only (E9): `standardRoad=true` sends every full-screen program down the standard road (glslang and SPIRV-Cross); `mathMode=fast` or `safe` compiles the packs' libraries in that math mode instead of relaxed |
+| `mcms.shaders.loadOutputs`, `mcms.shaders.keepDeadTargets` | off, off | profiling only (E9): `loadOutputs=true` makes every full-screen pass load the targets it overwrites (no "don't care" loads); `keepDeadTargets=true` runs every pass and stores every output, the targets no program reads too |
 | `mcms.metal.fence` | `true` | a fence made right after a submit names that submit, so a uniform-ring slot frees a frame sooner |
 | `mcms.metal.pace` | `true` | with vsync off, present only the last frame that makes each refresh |
 | `mcms.metal.paceAdapt` | `true` | the pacer's margin learns the compositor's latch from scanout times |
@@ -106,15 +139,15 @@ still cannot be made, for example when the library does not load, `MetalBackend.
 | `mcms.metal.presentQueue`, `paceSync`, `paceMarginMs`, `drawables`, `lazyClears`, `frameDepthDiscard`, `cbdiag`, `trace`, `gpuTimes`, `stats`, `waitStats`, `jfr`, `frameLog`, `encLog`, `dumpMsl`, `overrideMsl`, `uncachedMsl`, `gpuCount`, `passTest`, `latency` | off | diagnostics and experiments, unchanged from mcopt, except that the `stats` line and the `gpu` lines of `trace` are printed with `println` (Minecraft's log keeps only `println` output), that `frameLog` with `gpuTimes` adds each present's `presentedTime` (`presentedUs`, M5), and that `encLog` (with `frameLog`; `enclog.csv`, read by `bench/pass_report.py`) keeps the game's pass label of each render encoder and also timestamps the frame's blit encoders, naming the mip chains they fill (after M5; `trace`'s `gpu` lines list those blit encoders too, so their encoder numbers differ from M5's) |
 | `mcms.metal.vsyncLowLatency` | off | experiment after M5 (`true` or empty for a 1.5 ms margin, or the margin in ms): with VSync on, the VSync-on wait moves from before the drawable to after the frame's present is committed, before the game polls input for the next frame, and ends at the next refresh minus the second longest wake-to-GPU-done time of the last 32 frames plus the margin, so the next frame is sampled about that lead before it is shown; a frame slower than its lead is shown a refresh late. The `vsyncPaceTest` switches do not act on it |
 | `mcms.metal.vsyncPaceTest` (with `vsyncPaceTestAt`, `vsyncPaceTestFor`) | off | test only: mode 1 or 2 takes the VSync-on wait's grid away from `vsyncPaceTestAt` (default 90) for `vsyncPaceTestFor` (default 10) seconds after the first wait (mode 1: no refresh period from the display link; mode 2: no grid at all). Separate properties because Prism's `instance.cfg` cannot hold a comma in `JvmArgs` |
-| `mcms.metal.passLoadTest` | off | test only (after M5): a render pass whose label contains the given text opens each colour attachment it does not clear with load action "don't care" instead of "load" (for example `world0/`: Vitrail's Overworld deferred, composite and final programs). It measures what loading the old contents costs passes that write every pixel; a pass that leaves pixels unwritten shows garbage there |
+| `mcms.metal.passLoadTest` | off | test only (after M5): a render pass whose label contains the given text opens each colour attachment it does not clear with load action "don't care" instead of "load" (for example `world0/`: a pack's Overworld passes). It measures what loading the old contents costs passes that write every pixel; a pass that leaves pixels unwritten shows garbage there |
 | `mcms.metal.colorspace` | `none`, or `p3` when the mod `mac-colorspace-rollback` is loaded | the colour space the layer tags its frames with (RIL-481): `none` (no tag; CAMetalLayer.h: "If nil, no colormatching occurs", yet the window's sRGB then decides, see below), `srgb` (matched from sRGB to the colour space of the layer's context, "typically the display's colorspace"; what MoltenVK asks for) or `p3` (matched from Display P3); any other value throws when the surface is made. Without the property the layer follows `mac-colorspace-rollback`, which gives OpenGL windows and the Vulkan swapchain the Display P3 look and does nothing on Metal (chosen 2026-10-17; the surface then logs "mcms-metal colorspace: the layer is tagged Display P3, because mac-colorspace-rollback is loaded"). Each configure whose answer changes logs `mcms-metal colorspace: layer <name>, window <name>, screen <name>` (the layer's colour space, its window's and that window's screen's). Measured on 2026-10-17 (`results/2026-10-17-colors`): `none` and `srgb` show the same values on the display (matched from sRGB, as OpenGL and Vulkan do without a colour mod), and `p3` shows the frames' values as Display P3. The settings page's Colors row sets it (Automatic: unset, Vivid: `p3`, Accurate: `srgb`) and re-tags the live layer at once; a launch flag wins |
 
 Every frame's command buffers are watched: one the GPU fails is counted, and the render thread logs "N command buffer(s) failed
 on the GPU so far" with the last `MTLCommandBufferError` code (the first ten, then each time the count passes a power of two;
 M5, spec S4). The opt-in present queue's command buffers are not counted.
 
-Shader packs: every depth image the translated MSL samples with a depth comparison (`sampler2DShadow`) gets a constexpr
-comparison sampler (linear, clamp to edge, LEQUAL, base level), the same one Vitrail binds on Vulkan.
+Depth comparisons: every depth image the translated MSL samples with a depth comparison (`sampler2DShadow`) gets a constexpr
+comparison sampler (linear, clamp to edge, LEQUAL, base level).
 
 Wide sampler tables (M4): a Metal stage has 16 sampler slots (`[[sampler(0)]]` to `[[sampler(15)]]`). Each stage of a
 pipeline numbers its samplers without gaps, in binding order, and a texture the stage only fetches from (`texelFetch`,
@@ -128,39 +161,13 @@ components than its target's pixel format has ("fragment shader color output doe
 pixel format"); Vulkan leaves the missing components undefined. Photon v1.4 writes `vec3` into RGBA8 and RGBA16F targets.
 The translation pads every fragment output to four components (SPIRV-Cross `pad_fragment_output_components`), as MoltenVK
 does, so the padded components hold what MoltenVK's do; a target with fewer components keeps only its own.
-`TRANSLATION_VERSION` 4. Evidence: `results/2026-10-19-pad-photon` (Photon draws on Metal; Complementary's and BSL's
-translated sources differ from the old build only in Vitrail's one-channel `ofCoverage` output).
+`TRANSLATION_VERSION` 4. Evidence: `results/2026-10-19-pad-photon` (Photon on Metal, then through Vitrail).
 
-Compute and storage (M4): a pack's compute module becomes an MSL kernel and a compute pipeline (`MetalCompute`: one set,
-binding i at buffer and texture slot i, samplers numbered as above, the local size from the SPIR-V), dispatched on the
-frame's compute encoder (`mcmetal.m`: opened by the first dispatch or clear, ended by any other encoder or the commit).
-Storage images are 1D, 2D or 3D private textures with shader read and write (`MetalStorage.newImage`), cleared by
-built-in zero-filling kernels (Metal clears a texture only as a render pass load action), moved with box copies; storage
-buffers are private `MTLBuffer`s zeroed with a blit fill. Metal tracks these resources across encoders and command
-buffers on the one queue, which orders what Vitrail orders with Vulkan barriers. A render pass binds a pack's storage
-images and buffers by name: the frontend binds a placeholder of the declared kind under the name, and `MetalRenderPass`
-binds what `MetalHooks.storage` answers for it instead, as Vitrail's `VulkanRenderPassMixin` does while it pushes
-descriptors. A colour target a compute writes as `colorimgN` is created with shader-write usage while Vitrail's
-`TextureUsage` asks for it.
-
-The Vitrail seam for compute and storage (M4, applied only when Vitrail is loaded): Vitrail 0.12.0-beta's `PackCompute`,
-`ComputeShader`, `StorageImages`, `StorageBuffers` and `GpuRecording` record Vulkan commands and return without a word on
-any other device. `VitrailPackComputeMixin`, `VitrailComputePassMixin` and `VitrailComputeShaderMixin` send its compute
-roads (the shadow computes at the head of the frame, the computes before a full screen pass or standing alone) to
-`dev.vitrail.render.McmsMetalCompute`, which binds the same names in the same order on Metal; `VitrailStorageImagesMixin`
-and `VitrailStorageBuffersMixin` send allocation, clears, moves and lookups to `dev.mcms.metal.vitrail.MetalStorageImages`
-and `MetalStorageBuffers`, which follow Vitrail's own rules (which volume follows the camera, the clear-at-birth budget,
-the log lines); `VitrailGpuRecordingMixin` ends the open pass and defers destruction through this backend's encoder;
-`VitrailGpuFormatsMixin` answers which formats a shader can write (every colour format). `McmsMetalCompute` lives in
-Vitrail's package because the classes it calls are package-private there. Vitrail's own files are not changed.
-Evidence: `results/2026-10-12-m4-compute` (a self-checking test pack), `-m4-profiles`, `-m4-pictures-vh`, `-m4-pictures-cl`.
-
-Mip chains: before a pack program reads a colour target at a lod, Vitrail asks the encoder to fill that target's
-mip chain through its `MipmapCommands` interface, which it adds to Vulkan's encoder with a mixin.
-`VitrailMipmapCommandsMixin` adds it to this backend's encoder (only when Vitrail is loaded), and
-`MetalEncoder.generateMipmaps` fills the chain with Metal's `generateMipmapsForTexture` (2x2 linear reduction). Depth
-and integer formats answer false, and Vitrail then keeps reading them at the base level, as before. Without the
-chain, BSL's exposure read one pixel and its End came out darker on Metal (`results/2026-10-11-m0c-dims`).
+Vitrail, until E10: from M0c to E9, mixins let Vitrail's shader engine run on this backend (its compute passes, storage
+images and buffers, mip chains and device report; evidence `results/2026-10-11-m0c-dims`, `results/2026-10-12-m0c-device`
+and `results/2026-10-12-m4-*`), with four files adapted from Vitrail under LGPL-3.0-only. E10 removed them all: Quicksilver's
+own engine draws the shader packs (`docs/engine/plan.md`), and `fabric.mod.json` breaks Vitrail, so the game does not start
+with both.
 
 Sodium's arena textures (RIL-477, applied only when Sodium is loaded): Sodium 0.9.3's `BufferArena` constructor (alpha.1 and beta.1)
 registers a 200x200 debug-map `DynamicTexture` in the game's `TextureManager` under a name made from the arena's identity
@@ -177,44 +184,21 @@ name "Vulkan" and OPEN_GL for every other name. On Metal, DH's light-map mixin t
 OpenGL backend's `GlTexture` and throws (`results/2026-10-14-pack-on-metal`, run 1). `DistantHorizonsRenderApiMixin`
 makes the name "Metal" count as Vulkan there, so DH hands the light map over as a renderpearl `GpuTexture` and draws
 with its Blaze3D engine (the default on 26.3) through renderpearl. On Metal its far terrain looks as it does on Vulkan,
-without shaders and with Complementary's DH programs through Vitrail (`results/2026-10-14-dh-metal`). DH's OpenGL engine
+without shaders and with Complementary's DH programs (then through Vitrail, `results/2026-10-14-dh-metal`). DH's OpenGL engine
 still cannot run on Metal; DH refuses it at startup, as it does on Vulkan. Only DH 3.3.4 gets the mixin.
-
-Device report: Vitrail asks the device its packs' features depend on in `VulkanBackendMixin.vitrail$deviceFeatures`,
-which runs only around Mojang's Vulkan device creation; unserved, `BufferBlending.served=false` refuses packs requiring
-`PER_BUFFER_BLENDING` and folds per-buffer `blend.*` directives into one whole-program function.
-`VitrailDeviceReportMixin` (applied only when Vitrail is loaded) serves the answers for an Apple GPU under native
-Metal at this backend's device creation, before any pack is read, and logs one INFO line
-(`mcms-metal device report on Metal: ...`). One rule: where an answer comes from SPIRV-Cross or from the Apple GPU
-itself, it is the answer MoltenVK gives on this Mac, because the road to Metal runs through the same translator; where
-an answer would route Vitrail into Vulkan-only machinery, it is refused. The answers: per-target blending yes (Metal's
-per-attachment `MTLRenderPipelineColorAttachmentDescriptor`, filled per target from renderpearl's `ColorTargetState` in
-`MetalPipeline.describe` and `mcmetal.m`'s `mc_pipeline_new`); geometry stage no (Metal has none); wide sampler sets
-off (a Vulkan push-descriptor road that would call `vkUpdateDescriptorSets`); the three vendor GLSL extensions MoltenVK
-exposes on this Mac present, every other one absent; subgroup operations absent from the vertex, geometry and
-tessellation-evaluation stages (SPIRV-Cross converts simdgroup operations in fragment and compute only, the answer
-MoltenVK gives here); the float packing rewrite on (the bug it dodges was SPIRV-Cross's MSL for those builtins, and
-SPIRV-Cross is this backend's translator too); oversize `shared` declarations moved into a buffer yes (Metal caps
-threadgroup memory; `McmsMetalCompute` applies Vitrail's move since M4). Evidence and the test packs that prove the
-blending answer: `results/2026-10-12-m0c-device`.
 
 ## Provenance
 
 Derived from mcopt v0.3.0-alpha.2 by Noah Dunnagan (Apache-2.0); every source file taken from mcopt carries a header naming
 its origin and what changed here. The cut removed mcopt's own-terrain, far-terrain, recorder, frame-capture and CPU-profile
-hooks (see `docs/research/m0a-gap-list.md`); `MetalHooks`/`PassDelegate` stay in the jar: the pass hooks are inert, and the
-storage seams of `MetalHooks` are installed by the Vitrail mixins since M4. mcopt's LICENSE
-and NOTICE ship in the jar, as Apache-2.0 asks.
+hooks (see `docs/research/m0a-gap-list.md`); `MetalHooks`/`PassDelegate` stay in the jar: the shader engine redirects passes
+through them, and its draw log reads their encoder events (`docs/engine/plan.md` E4). mcopt's LICENSE and NOTICE ship in the
+jar, as Apache-2.0 asks.
 
 ## Licences
 
-The mod is Apache-2.0 (`LICENSE`, `NOTICE`), with one exception: four files adapt Vitrail's own code to Metal, say so in
-their header and are LGPL-3.0-only, Vitrail's licence: `dev/vitrail/render/McmsMetalCompute.java`,
-`dev/mcms/metal/vitrail/MetalStorageImages.java`, `dev/mcms/metal/vitrail/MetalStorageBuffers.java` and
-`dev/mcms/metal/mixin/VitrailComputeShaderMixin.java`. They ship in this jar (decided 2026-10-20). As LGPL-3.0 §4 asks,
-the jar carries the GPL-3.0 and LGPL-3.0 texts (`LICENSE-GPL-3.0` and `LICENSE-LGPL-3.0`, verbatim from gnu.org; the LGPL
-text is byte-identical to Vitrail's `LICENSE`), `NOTICE` says that Vitrail is used and is covered by the LGPL-3.0, and
-the source of every released jar is public at https://github.com/momoshamiko/quicksilver, so anyone can change those
-files and build the jar again. The mod holds no Sodium code: its Sodium mixins change Sodium at run time, and players get
-Sodium (PolyForm Shield 1.0.0) from its own page. The reading behind this is in `docs/research/m0a-gap-list.md` (M0a-4)
-and on RIL-487; it is not legal advice.
+The mod is Apache-2.0 (`LICENSE`, `NOTICE`). Until the E10 cutover, four files adapted Vitrail's own code to Metal under
+LGPL-3.0-only, and the jars of that time carried the GPL-3.0 and LGPL-3.0 texts; the public source at
+https://github.com/momoshamiko/quicksilver keeps their history. The mod holds no Sodium code: its Sodium mixins change Sodium
+at run time, and players get Sodium (PolyForm Shield 1.0.0) from its own page. The reading behind this is in
+`docs/research/m0a-gap-list.md` (M0a-4) and on RIL-487; it is not legal advice.

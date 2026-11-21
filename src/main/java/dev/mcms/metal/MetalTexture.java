@@ -2,6 +2,7 @@
  * Derived from mcopt v0.3.0-alpha.2 (https://github.com/noahdunnagan/mcopt), metal/src/main/java/mcopt/metal/MetalTexture.java.
  * Copyright Noah Dunnagan, Apache License 2.0. Changed by MC Metal Shaders, 2026-10-11: package renamed to dev.mcms.metal; cut the -Dmcopt.metal.residentAnim residency fields.
  * 2026-10-13 (M5, spec S4): -Dmcms.metal.textureLog logs each close (MetalDevice.createTexture logs each creation).
+ * E10 (ADR 0006): the shaderWrite flag went with the Vitrail integration that set and read it.
  */
 package dev.mcms.metal;
 
@@ -19,8 +20,6 @@ class MetalTexture extends BaseGpuTexture {
 	final long handle;
 	/** The encoder log: the submit this texture was last bound in (cold binds: not in the last 30). */
 	long encLastBind = -1000;
-	/** Created with ShaderWrite usage (a compute kernel may write it). */
-	boolean shaderWrite;
 	private final MetalEncoder encoder;
 	private boolean closed;
 

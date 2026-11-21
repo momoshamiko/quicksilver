@@ -40,9 +40,8 @@ public final class MetalBackend implements GpuBackend {
 			device = new MetalDevice();
 		} catch (LinkageError | RuntimeException e) {
 			// RIL-497: Minecraft tries its next backend only after a BackendCreationException (Minecraft.<init>). Anything else, such
-			// as libmcmsmetal.dylib failing to load (an ExceptionInInitializerError from Native), would end the start. A mixin at the
-			// constructor's tail (VitrailDeviceReportMixin) runs after `current = this`, so a failure there must not leave the
-			// fallback backend with a current Metal device: every Vitrail seam reads it (MetalStorage.active).
+			// as libmcmsmetal.dylib failing to load (an ExceptionInInitializerError from Native), would end the start. The fallback
+			// backend must not see a current Metal device (the settings page and MetalBridge read it).
 			MetalDevice.current = null;
 			Throwable why = e instanceof ExceptionInInitializerError && e.getCause() != null ? e.getCause() : e;
 			BackendCreationException unavailable = new BackendCreationException("Metal unavailable: " + why, BackendCreationException.Reason.PLATFORM_ERROR);

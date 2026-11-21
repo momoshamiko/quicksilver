@@ -7,7 +7,8 @@
  * per-stage sampler slots. 2026-10-13 (M5): bindings for the VSync-on wait, the memory counters and the failed-command-buffer count.
  * After M5: bindings for mc_vsync_view (the display link follows the game window's display, RIL-476) and mc_vsync_wait_next
  * (-Dmcms.metal.vsyncLowLatency). 2026-10-16 (RIL-481): binding for mc_layer_colorspace_report. 2026-10-18 (ADR 0002, the settings
- * page): bindings for mc_layer_colorspace and mc_layer_hud.
+ * page): bindings for mc_layer_colorspace and mc_layer_hud. E10: the bindings only the Vitrail storage seam called (mc_blit_fill,
+ * mc_texture_new_shaped, mc_texture_view_format, mc_clear_storage, mc_blit_texture_box) removed with it.
  */
 package dev.mcms.metal;
 
@@ -80,22 +81,25 @@ final class Native {
 	private static final MethodHandle ENC_COUNTERS = fn("mc_enc_counters", true, null, JAVA_LONG);
 	private static final MethodHandle PROFILE_LABELS = fn("mc_profile_labels", false, null, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT);
 	private static final MethodHandle BLIT_BUFFER = fn("mc_blit_buffer", false, null, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG);
-	private static final MethodHandle BLIT_FILL = fn("mc_blit_fill", false, null, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle BLIT_BUFFER_TO_TEXTURE = fn("mc_blit_buffer_to_texture", false, null,
 		JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT);
 	private static final MethodHandle BLIT_TEXTURE_TO_BUFFER = fn("mc_blit_texture_to_buffer", false, null,
 		JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle BLIT_TEXTURE_TO_TEXTURE = fn("mc_blit_texture_to_texture", false, null,
 		JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT);
+	private static final MethodHandle DUMP_INFO = fn("mc_dump_info", false, JAVA_INT, JAVA_LONG, JAVA_INT);
+	private static final MethodHandle DUMP_READBACK = fn("mc_dump_readback", false, JAVA_INT,
+		JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_LONG);
 	private static final MethodHandle BLIT_GENERATE_MIPMAPS = fn("mc_blit_generate_mipmaps", false, JAVA_INT, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle RENDER_BEGIN = fn("mc_render_begin", false, JAVA_INT,
 		JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_FLOAT, JAVA_INT, JAVA_INT);
 	private static final MethodHandle DISCARD = fn("mc_discard", true, null, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle R_PIPELINE = fn("mc_r_pipeline", true, null, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_FLOAT, JAVA_FLOAT, JAVA_INT);
+	private static final MethodHandle R_PIPELINE_W = fn("mc_r_pipeline_w", true, null, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_FLOAT, JAVA_FLOAT, JAVA_INT, JAVA_INT);
 	private static final MethodHandle R_BUFFER = fn("mc_r_buffer", true, null, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle R_VERTEX_BUFFER = fn("mc_r_vertex_buffer", true, null, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle R_BYTES = fn("mc_r_bytes", true, null, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT);
-	private static final MethodHandle R_TEXTURE = fn("mc_r_texture", true, null, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_LONG);
+	private static final MethodHandle R_TEXTURE = fn("mc_r_texture", true, null, JAVA_LONG, JAVA_INT, JAVA_LONG);
 	private static final MethodHandle R_SCISSOR = fn("mc_r_scissor", true, null, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT);
 	private static final MethodHandle R_INDEX = fn("mc_r_index", true, null, JAVA_LONG, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle R_USE = fn("mc_r_use", true, null, JAVA_LONG, JAVA_LONG);
@@ -146,9 +150,7 @@ final class Native {
 	private static final MethodHandle TRACK_ON = fn("mc_track_on", false, null);
 	private static final MethodHandle TRACK_COUNT = fn("mc_track_count", false, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle TRACK_BYTES = fn("mc_track_bytes", false, JAVA_LONG, JAVA_INT);
-	// M4: storage images and buffers, compute passes (mcmetal.m, "M4")
-	private static final MethodHandle TEXTURE_NEW_SHAPED = fn("mc_texture_new_shaped", false, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT);
-	private static final MethodHandle TEXTURE_VIEW_FORMAT = fn("mc_texture_view_format", false, JAVA_LONG, JAVA_LONG, JAVA_INT);
+	// M4: storage buffers and compute passes (mcmetal.m, "M4"), which the shader engine's compute uses
 	private static final MethodHandle BUFFER_NEW_PRIVATE = fn("mc_buffer_new_private", false, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle COMPUTE_PIPELINE_NEW = fn("mc_compute_pipeline_new", false, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG);
 	private static final MethodHandle C_PIPELINE = fn("mc_c_pipeline", false, null, JAVA_LONG, JAVA_LONG);
@@ -156,9 +158,6 @@ final class Native {
 	private static final MethodHandle C_TEXTURE = fn("mc_c_texture", false, null, JAVA_LONG, JAVA_INT, JAVA_LONG);
 	private static final MethodHandle C_SAMPLER = fn("mc_c_sampler", false, null, JAVA_LONG, JAVA_INT, JAVA_LONG);
 	private static final MethodHandle C_DISPATCH = fn("mc_c_dispatch", false, null, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT);
-	private static final MethodHandle CLEAR_STORAGE = fn("mc_clear_storage", false, null, JAVA_LONG, JAVA_LONG, JAVA_INT);
-	private static final MethodHandle BLIT_TEXTURE_BOX = fn("mc_blit_texture_box", false, null,
-		JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT);
 	private static final MethodHandle R_TEXTURE_SLOTS = fn("mc_r_texture_slots", true, null, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT);
 	private static final MethodHandle END_ENCODERS = fn("mc_end_encoders", false, null, JAVA_LONG);
 
@@ -240,20 +239,30 @@ final class Native {
 	static long deviceAllocated(long ctx) { try { return (long) DEVICE_ALLOCATED.invokeExact(ctx); } catch (Throwable t) { throw rethrow(t); } }
 	static int profileCount(long enc) { try { return (int) PROFILE_COUNT.invokeExact(enc); } catch (Throwable t) { throw rethrow(t); } }
 	static void blitBuffer(long enc, long src, long srcOff, long dst, long dstOff, long size) { try { BLIT_BUFFER.invokeExact(enc, src, srcOff, dst, dstOff, size); } catch (Throwable t) { throw rethrow(t); } }
-	static void fillBuffer(long enc, long buffer, long offset, long length, int value) { try { BLIT_FILL.invokeExact(enc, buffer, offset, length, value); } catch (Throwable t) { throw rethrow(t); } }
 	static void blitBufferToTexture(long enc, long src, long off, int bytesPerRow, int bytesPerImage, long dst, int slice, int mip, int x, int y, int w, int h) { try { BLIT_BUFFER_TO_TEXTURE.invokeExact(enc, src, off, bytesPerRow, bytesPerImage, dst, slice, mip, x, y, w, h); } catch (Throwable t) { throw rethrow(t); } }
 	static void blitTextureToBuffer(long enc, long src, int mip, int x, int y, int w, int h, long dst, long off, int bytesPerRow) { try { BLIT_TEXTURE_TO_BUFFER.invokeExact(enc, src, mip, x, y, w, h, dst, off, bytesPerRow); } catch (Throwable t) { throw rethrow(t); } }
 	static void blitTextureToTexture(long enc, long src, long dst, int mip, int dx, int dy, int sx, int sy, int w, int h) { try { BLIT_TEXTURE_TO_TEXTURE.invokeExact(enc, src, dst, mip, dx, dy, sx, sy, w, h); } catch (Throwable t) { throw rethrow(t); } }
+	/** 2026-11-14 (draw dumps): a texture's width (what 0), height (1) or MTLPixelFormat (2); -1 for none. */
+	static int dumpInfo(long texture, int what) { try { return (int) DUMP_INFO.invokeExact(texture, what); } catch (Throwable t) { throw rethrow(t); } }
+	/** 2026-11-14 (draw dumps): see mc_dump_readback; 1 when a render encoder was reopened, 0 none open, -1 the GPU failed. */
+	static int dumpReadback(long enc, long texture, int width, int height, int bytesPerPixel, int depth, long dst) {
+		try { return (int) DUMP_READBACK.invokeExact(enc, texture, width, height, bytesPerPixel, depth, dst); } catch (Throwable t) { throw rethrow(t); }
+	}
 	/** 1: the chain's fill is recorded on the blit encoder; 0: the texture's format can't be reduced, nothing recorded. */
 	static int blitGenerateMipmaps(long enc, long texture) { try { return (int) BLIT_GENERATE_MIPMAPS.invokeExact(enc, texture); } catch (Throwable t) { throw rethrow(t); } }
 	/** 0: opened a new render encoder; 1: continued the open one (same attachments); 2: continued it after clearing depth in place. */
 	static int renderBegin(long enc, int count, long colors, long clears, long depth, int clearDepth, float depthValue, int w, int h) { try { return (int) RENDER_BEGIN.invokeExact(enc, count, colors, clears, depth, clearDepth, depthValue, w, h); } catch (Throwable t) { throw rethrow(t); } }
 	static void discard(long enc, long texture) { try { DISCARD.invokeExact(enc, texture); } catch (Throwable t) { throw rethrow(t); } }
 	static void pipeline(long enc, long pso, long depth, int cull, int wireframe, float biasConstant, float biasSlope, int primitive) { try { R_PIPELINE.invokeExact(enc, pso, depth, cull, wireframe, biasConstant, biasSlope, primitive); } catch (Throwable t) { throw rethrow(t); } }
+	static void pipelineW(long enc, long pso, long depth, int cull, int wireframe, float biasConstant, float biasSlope, int primitive, int ccw) { try { R_PIPELINE_W.invokeExact(enc, pso, depth, cull, wireframe, biasConstant, biasSlope, primitive, ccw); } catch (Throwable t) { throw rethrow(t); } }
 	static void buffer(long enc, int index, long buffer, long offset) { try { R_BUFFER.invokeExact(enc, index, buffer, offset); } catch (Throwable t) { throw rethrow(t); } }
 	static void vertexBuffer(long enc, int index, long buffer, long offset) { try { R_VERTEX_BUFFER.invokeExact(enc, index, buffer, offset); } catch (Throwable t) { throw rethrow(t); } }
 	static void bytes(long enc, int index, long bytes, int length) { try { R_BYTES.invokeExact(enc, index, bytes, length); } catch (Throwable t) { throw rethrow(t); } }
-	static void texture(long enc, int index, long texture, long sampler) { try { R_TEXTURE.invokeExact(enc, index, texture, sampler); } catch (Throwable t) { throw rethrow(t); } }
+	/** Binds a texture at one index of both stages. A sampler is never bound at a texture's index (see textureSlots). */
+	static void texture(long enc, int index, long texture) {
+		if (!SamplerSlots.textureIndexOk(index, "render texture")) return;
+		try { R_TEXTURE.invokeExact(enc, index, texture); } catch (Throwable t) { throw rethrow(t); }
+	}
 	static void scissor(long enc, int x, int y, int w, int h) { try { R_SCISSOR.invokeExact(enc, x, y, w, h); } catch (Throwable t) { throw rethrow(t); } }
 	static void index(long enc, long buffer, int intIndices) { try { R_INDEX.invokeExact(enc, buffer, intIndices); } catch (Throwable t) { throw rethrow(t); } }
 	static void useResource(long enc, long buffer) { try { R_USE.invokeExact(enc, buffer); } catch (Throwable t) { throw rethrow(t); } }
@@ -298,18 +307,30 @@ final class Native {
 	static void trackOn() { try { TRACK_ON.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static long trackCount(int kind) { try { return (long) TRACK_COUNT.invokeExact(kind); } catch (Throwable t) { throw rethrow(t); } }
 	static long trackBytes(int kind) { try { return (long) TRACK_BYTES.invokeExact(kind); } catch (Throwable t) { throw rethrow(t); } }
-	static long textureNewShaped(long ctx, int format, int type, int w, int h, int d, int usage) { try { return (long) TEXTURE_NEW_SHAPED.invokeExact(ctx, format, type, w, h, d, usage); } catch (Throwable t) { throw rethrow(t); } }
-	static long textureViewFormat(long texture, int format) { try { return (long) TEXTURE_VIEW_FORMAT.invokeExact(texture, format); } catch (Throwable t) { throw rethrow(t); } }
 	static long bufferNewPrivate(long ctx, long size) { try { return (long) BUFFER_NEW_PRIVATE.invokeExact(ctx, size); } catch (Throwable t) { throw rethrow(t); } }
 	static long computePipelineNew(long ctx, long source, long entry, long err, int errCap, long maxThreads) { try { return (long) COMPUTE_PIPELINE_NEW.invokeExact(ctx, source, entry, err, errCap, maxThreads); } catch (Throwable t) { throw rethrow(t); } }
 	static void computePipeline(long enc, long pso) { try { C_PIPELINE.invokeExact(enc, pso); } catch (Throwable t) { throw rethrow(t); } }
 	static void computeBuffer(long enc, int index, long buffer, long offset) { try { C_BUFFER.invokeExact(enc, index, buffer, offset); } catch (Throwable t) { throw rethrow(t); } }
-	static void computeTexture(long enc, int index, long texture) { try { C_TEXTURE.invokeExact(enc, index, texture); } catch (Throwable t) { throw rethrow(t); } }
-	static void computeSampler(long enc, int index, long sampler) { try { C_SAMPLER.invokeExact(enc, index, sampler); } catch (Throwable t) { throw rethrow(t); } }
+	static void computeTexture(long enc, int index, long texture) {
+		if (!SamplerSlots.textureIndexOk(index, "compute texture")) return;
+		try { C_TEXTURE.invokeExact(enc, index, texture); } catch (Throwable t) { throw rethrow(t); }
+	}
+	static void computeSampler(long enc, int index, long sampler) {
+		int slot = SamplerSlots.check(index, "compute sampler");
+		if (slot < 0) return;
+		try { C_SAMPLER.invokeExact(enc, slot, sampler); } catch (Throwable t) { throw rethrow(t); }
+	}
 	static void dispatch(long enc, int gx, int gy, int gz, int lx, int ly, int lz) { try { C_DISPATCH.invokeExact(enc, gx, gy, gz, lx, ly, lz); } catch (Throwable t) { throw rethrow(t); } }
-	static void clearStorage(long enc, long texture, int kind) { try { CLEAR_STORAGE.invokeExact(enc, texture, kind); } catch (Throwable t) { throw rethrow(t); } }
-	static void blitTextureBox(long enc, long src, long dst, int sx, int sy, int sz, int dx, int dy, int dz, int w, int h, int d) { try { BLIT_TEXTURE_BOX.invokeExact(enc, src, dst, sx, sy, sz, dx, dy, dz, w, h, d); } catch (Throwable t) { throw rethrow(t); } }
-	static void textureSlots(long enc, int index, long texture, long sampler, int vslot, int fslot) { try { R_TEXTURE_SLOTS.invokeExact(enc, index, texture, sampler, vslot, fslot); } catch (Throwable t) { throw rethrow(t); } }
+	/**
+	 * Binds a texture at its index and its sampler at each stage's own sampler slot (vslot, fslot; -1 for none in that stage).
+	 * A slot past the stage's limit is dropped by SamplerSlots, so the texture still binds.
+	 */
+	static void textureSlots(long enc, int index, long texture, long sampler, int vslot, int fslot) {
+		if (!SamplerSlots.textureIndexOk(index, "render texture")) return;
+		int v = SamplerSlots.check(vslot, "vertex sampler");
+		int f = SamplerSlots.check(fslot, "fragment sampler");
+		try { R_TEXTURE_SLOTS.invokeExact(enc, index, texture, sampler, v, f); } catch (Throwable t) { throw rethrow(t); }
+	}
 	static void endEncoders(long enc) { try { END_ENCODERS.invokeExact(enc); } catch (Throwable t) { throw rethrow(t); } }
 
 	private static RuntimeException rethrow(Throwable t) {

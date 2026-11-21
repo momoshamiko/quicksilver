@@ -4,7 +4,8 @@
 // (with VSync on the frame's work is committed before nextDrawable), and mc_enc_empty counts a submit committed early as not empty;
 // mc_blit_generate_mipmaps added (Vitrail's mip chains, through MetalEncoder.generateMipmaps). 2026-10-12 (M4): storage images
 // (mc_texture_new_shaped, mc_texture_view_format, mc_clear_storage), private buffers, compute passes (mc_compute_pipeline_new, the
-// frame's compute encoder and mc_c_*), box copies (mc_blit_texture_box) and per-stage sampler slots (mc_r_texture_slots) added.
+// frame's compute encoder and mc_c_*), box copies (mc_blit_texture_box) and per-stage sampler slots (mc_r_texture_slots) added; at
+// E10 the storage images, their zero-fill kernels, mc_blit_fill and the box copies went with the Vitrail integration that used them.
 // 2026-10-13 (M5): the VSync-on wait for the display link's next refresh (mc_vsync_wait), memory counters (mc_mem_*) and a count
 // of command buffers the GPU failed (cbWatch, mc_cb_errors) added; then live Metal objects by kind (mc_track_*, spec S4).
 // After M5: the frame's blit encoder is timestamped in the encoder log and trace (blit() through mc_profiled_blit), a mip
@@ -57,18 +58,7 @@ static NSString *presentSource = @
 	"  float2 p = float2((id << 1) & 2, id & 2);\n"
 	"  return float4(p * 2.0 - 1.0, c.depth, 1.0);\n"
 	"}\n"
-	"fragment float4 clear_fs(constant Clear &c [[buffer(0)]]) { return c.color; }\n"
-	// M4: zero-fill kernels for a pack's storage images. Vitrail clears them with vkCmdClearColorImage on Vulkan; Metal clears a
-	// texture only as a render pass load action, one pass per slice of a 3D image. One kernel per channel kind and dimension.
-	"kernel void clear_f1(texture1d<float, access::write> t [[texture(0)]], uint p [[thread_position_in_grid]]) { t.write(float4(0.0), p); }\n"
-	"kernel void clear_f2(texture2d<float, access::write> t [[texture(0)]], uint2 p [[thread_position_in_grid]]) { t.write(float4(0.0), p); }\n"
-	"kernel void clear_f3(texture3d<float, access::write> t [[texture(0)]], uint3 p [[thread_position_in_grid]]) { t.write(float4(0.0), p); }\n"
-	"kernel void clear_u1(texture1d<uint, access::write> t [[texture(0)]], uint p [[thread_position_in_grid]]) { t.write(uint4(0), p); }\n"
-	"kernel void clear_u2(texture2d<uint, access::write> t [[texture(0)]], uint2 p [[thread_position_in_grid]]) { t.write(uint4(0), p); }\n"
-	"kernel void clear_u3(texture3d<uint, access::write> t [[texture(0)]], uint3 p [[thread_position_in_grid]]) { t.write(uint4(0), p); }\n"
-	"kernel void clear_i1(texture1d<int, access::write> t [[texture(0)]], uint p [[thread_position_in_grid]]) { t.write(int4(0), p); }\n"
-	"kernel void clear_i2(texture2d<int, access::write> t [[texture(0)]], uint2 p [[thread_position_in_grid]]) { t.write(int4(0), p); }\n"
-	"kernel void clear_i3(texture3d<int, access::write> t [[texture(0)]], uint3 p [[thread_position_in_grid]]) { t.write(int4(0), p); }\n";
+	"fragment float4 clear_fs(constant Clear &c [[buffer(0)]]) { return c.color; }\n";
 
 Ctx *mc_create(char *name, int nameCap, char *err, int errCap) {
 	@autoreleasepool {
@@ -117,7 +107,7 @@ uint64_t mc_max_buffer_length(Ctx *ctx) { return ctx->device.maxBufferLength; }
 // Metal object itself goes away, after its last retain (Java's, a command buffer's, a texel view's on its buffer, a residency
 // set's), so the counts are objects that still exist. Views and texel views share their parent's memory: counted at 0 bytes.
 // Pipelines have no allocatedSize: counted at 0 bytes. Objects made before mc_track_on are not counted.
-enum { TK_SHARED, TK_PRIVATE, TK_TEXTURE, TK_VIEW, TK_TEXEL, TK_ARENA, TK_PIPELINE, TK_KINDS };
+enum { TK_SHARED, TK_PRIVATE, TK_TEXTURE, TK_VIEW, TK_TEXEL, TK_ARENA, TK_PIPELINE, TK_LIBRARY, TK_DEPTH, TK_KINDS };
 static int64_t tkCount[TK_KINDS], tkBytes[TK_KINDS];
 static int tkOn;
 static char tkKey;
@@ -146,6 +136,8 @@ static id tk(id obj, int kind, int64_t bytes) {
 	return obj;
 }
 static id tkResource(id<MTLResource> r, int kind) { return tkOn && r ? tk(r, kind, (int64_t) r.allocatedSize) : r; }
+// The engine's own libraries (mcshaders.m) and depth states count under the same kinds (2026-11-15, E6 shutdown test).
+id mc_track_object(id obj, int kind) { return tk(obj, kind, 0); }
 void mc_track_on(void) { tkOn = 1; }
 int64_t mc_track_count(int kind) { return kind >= 0 && kind < TK_KINDS ? __atomic_load_n(&tkCount[kind], __ATOMIC_RELAXED) : -1; }
 int64_t mc_track_bytes(int kind) { return kind >= 0 && kind < TK_KINDS ? __atomic_load_n(&tkBytes[kind], __ATOMIC_RELAXED) : -1; }
@@ -407,29 +399,6 @@ uint64_t mc_texture_buffer_alignment(Ctx *ctx, int format) {
 	return [ctx->device minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat) format];
 }
 
-// M4: a pack's storage image (Vitrail's image. directives): 1D (type 0), 2D (2) or 3D (7), one level, private, with the usage the
-// caller asks for (shader read 1, shader write 2, pixel format view 0x10).
-id<MTLTexture> mc_texture_new_shaped(Ctx *ctx, int format, int type, int width, int height, int depth, int usage) {
-	@autoreleasepool {
-		MTLTextureDescriptor *d = [[MTLTextureDescriptor new] autorelease];
-		d.textureType = (MTLTextureType) type;
-		d.pixelFormat = (MTLPixelFormat) format;
-		d.width = width;
-		d.height = type == MTLTextureType1D ? 1 : height;
-		d.depth = type == MTLTextureType3D ? depth : 1;
-		d.mipmapLevelCount = 1;
-		d.usage = (MTLTextureUsage) usage;
-		d.storageMode = MTLStorageModePrivate;
-		return tkResource([ctx->device newTextureWithDescriptor:d], TK_TEXTURE);
-	}
-}
-
-// M4: the same texels read as another pixel format (Vitrail's typed views of a custom image); the texture was made with the
-// pixel format view usage.
-id<MTLTexture> mc_texture_view_format(id<MTLTexture> texture, int format) {
-	return tk([texture newTextureViewWithPixelFormat:(MTLPixelFormat) format], TK_VIEW, 0);
-}
-
 // M4: a buffer only the GPU reads and writes (a pack's storage buffers, compute's shared-memory buffer).
 id<MTLBuffer> mc_buffer_new_private(Ctx *ctx, uint64_t size) {
 	return tkResource([ctx->device newBufferWithLength:size options:MTLResourceStorageModePrivate], TK_PRIVATE);
@@ -459,12 +428,13 @@ id<MTLLibrary> mc_library_new(Ctx *ctx, const char *source, char *err, int errCa
 		NSError *e = nil;
 		id<MTLLibrary> lib = [ctx->device newLibraryWithSource:[NSString stringWithUTF8String:source] options:o error:&e];
 		if (!lib) copyError(e, err, errCap);
-		return lib;
+		return tk(lib, TK_LIBRARY, 0);
 	}
 }
 
-// M4: a pack's compute pass (SPIRV-Cross's kernel for it, MetalCompute.java), compiled with the render pipelines' options;
-// *maxThreads gets the most threads one group of this pipeline may have, which the caller checks against the shader's local size.
+// M4: a compute pipeline from MSL source (MetalBridge.computePipelineNew: the shader engine's custom-image clear), compiled with
+// the render pipelines' options; *maxThreads gets the most threads one group of this pipeline may have, which the caller checks
+// against the shader's local size.
 id<MTLComputePipelineState> mc_compute_pipeline_new(Ctx *ctx, const char *source, const char *entry, char *err, int errCap, int *maxThreads) {
 	@autoreleasepool {
 		MTLCompileOptions *o = [[MTLCompileOptions new] autorelease];
@@ -556,7 +526,7 @@ id<MTLDepthStencilState> mc_depth_state_new(Ctx *ctx, int compare, int write) {
 		d.depthCompareFunction = (MTLCompareFunction) compare;
 		d.depthWriteEnabled = write != 0;
 		if (write) d.label = @"w";  // (mc_r_pipeline marks the open encoder's depth written: mc_tl_restart)
-		return [ctx->device newDepthStencilStateWithDescriptor:d];
+		return tk([ctx->device newDepthStencilStateWithDescriptor:d], TK_DEPTH, 0);
 	}
 }
 
@@ -1327,10 +1297,6 @@ void mc_blit_buffer(Enc *enc, id<MTLBuffer> src, uint64_t srcOffset, id<MTLBuffe
 	[blit(enc) copyFromBuffer:src sourceOffset:srcOffset toBuffer:dst destinationOffset:dstOffset size:size];
 }
 
-void mc_blit_fill(Enc *enc, id<MTLBuffer> buffer, uint64_t offset, uint64_t length, int value) {
-	[blit(enc) fillBuffer:buffer range:NSMakeRange(offset, length) value:(uint8_t) value];
-}
-
 void mc_blit_buffer_to_texture(Enc *enc, id<MTLBuffer> src, uint64_t offset, int bytesPerRow, int bytesPerImage,
 	id<MTLTexture> dst, int slice, int mip, int x, int y, int w, int h) {
 	[blit(enc) copyFromBuffer:src sourceOffset:offset sourceBytesPerRow:bytesPerRow sourceBytesPerImage:bytesPerImage
@@ -1349,7 +1315,8 @@ void mc_blit_texture_to_texture(Enc *enc, id<MTLTexture> src, id<MTLTexture> dst
 }
 
 // MC Metal Shaders: fills every level past the base from the one above with Metal's own 2x2 linear reduction, which is what
-// Vitrail's Vulkan blit chain and glGenerateMipmap give a pack. Colour formats only (MetalConst.mipmapReducible); a 32-bit float
+// Vitrail's Vulkan blit chain and glGenerateMipmap give a pack. Colour formats only (the engine's colour targets and shadow
+// colour buffers; a shadow depth map never has a chain); a 32-bit float
 // one needs a device that filters it. 1: recorded on the blit encoder; 0: this texture can't be reduced, nothing recorded.
 int mc_blit_generate_mipmaps(Enc *enc, id<MTLTexture> texture) {
 	MTLPixelFormat f = texture.pixelFormat;
@@ -1384,39 +1351,6 @@ void mc_c_texture(Enc *enc, int index, id<MTLTexture> texture) { [computeEnc(enc
 void mc_c_sampler(Enc *enc, int index, id<MTLSamplerState> sampler) { [computeEnc(enc) setSamplerState:sampler atIndex:index]; }
 void mc_c_dispatch(Enc *enc, int gx, int gy, int gz, int lx, int ly, int lz) {
 	[computeEnc(enc) dispatchThreadgroups:MTLSizeMake(gx, gy, gz) threadsPerThreadgroup:MTLSizeMake(lx, ly, lz)];
-}
-
-static id<MTLComputePipelineState> clearKernel(Ctx *ctx, int kind, int dims) {
-	static const char *names[9] = {"clear_f1", "clear_f2", "clear_f3", "clear_u1", "clear_u2", "clear_u3", "clear_i1", "clear_i2", "clear_i3"};
-	int at = kind * 3 + dims - 1;
-	if (!ctx->clearKernels[at]) {
-		@autoreleasepool {
-			id<MTLFunction> fn = [[ctx->builtins newFunctionWithName:[NSString stringWithUTF8String:names[at]]] autorelease];
-			NSError *e = nil;
-			ctx->clearKernels[at] = [ctx->device newComputePipelineStateWithFunction:fn error:&e];
-			if (!ctx->clearKernels[at]) fprintf(stderr, "mcms-metal: %s: %s\n", names[at], e.description.UTF8String);
-		}
-	}
-	return ctx->clearKernels[at];
-}
-
-// Every texel of a storage image to zero (kind: 0 float, unorm or snorm, 1 uint, 2 sint), on the frame's compute encoder.
-void mc_clear_storage(Enc *enc, id<MTLTexture> texture, int kind) {
-	int dims = texture.textureType == MTLTextureType3D ? 3 : texture.textureType == MTLTextureType1D ? 1 : 2;
-	id<MTLComputePipelineState> pso = clearKernel(enc->ctx, kind, dims);
-	if (!pso) return;
-	id<MTLComputeCommandEncoder> c = computeEnc(enc);
-	[c setComputePipelineState:pso];
-	[c setTexture:texture atIndex:0];
-	MTLSize grid = MTLSizeMake(texture.width, dims >= 2 ? texture.height : 1, dims == 3 ? texture.depth : 1);
-	MTLSize group = dims == 3 ? MTLSizeMake(4, 4, 4) : dims == 2 ? MTLSizeMake(8, 8, 1) : MTLSizeMake(64, 1, 1);
-	[c dispatchThreads:grid threadsPerThreadgroup:group];
-}
-
-// A box of texels from one image into another (3D included): Vitrail's re-anchoring of the volumes that follow the camera.
-void mc_blit_texture_box(Enc *enc, id<MTLTexture> src, id<MTLTexture> dst, int sx, int sy, int sz, int dx, int dy, int dz, int w, int h, int d) {
-	[blit(enc) copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(sx, sy, sz) sourceSize:MTLSizeMake(w, h, d)
-		toTexture:dst destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(dx, dy, dz)];
 }
 
 static int sameTargets(Enc *enc, int count, id<MTLTexture> const *colors, const float *clears, id<MTLTexture> depth) {
@@ -1645,6 +1579,8 @@ static MTLRenderPassDescriptor *keptPass(Enc *enc, int count, id<MTLTexture> con
  * Region clears are expressed as a pass that loads, so partial clears go through mc_r_clear_rect.
  * Returns 0 when it opened a new encoder, 1 when the pass continues the open one (same attachments, nothing to clear),
  * 2 when it continues it after clearing depth in place.
+ * Bit 16 (added 2026-11-14 for the draw log): the call ended an open render encoder first (a new encoder begins); the
+ * mode is in bits 0 and 1 as above.
  */
 int mc_render_begin(Enc *enc, int count, id<MTLTexture> const *colors, const float *clears,
 	id<MTLTexture> depth, int clearDepth, float depthValue, int width, int height) {
@@ -1654,6 +1590,7 @@ int mc_render_begin(Enc *enc, int count, id<MTLTexture> const *colors, const flo
 		foldDepthClear(enc, depthValue, width, height);
 		return 2;
 	}
+	int endedOpen = enc->render != nil;
 	endRender(enc);
 	enc->colorCount = count;
 	memcpy(enc->colors, colors, sizeof(id) * count);
@@ -1674,7 +1611,9 @@ int mc_render_begin(Enc *enc, int count, id<MTLTexture> const *colors, const flo
 		if (depth) {
 			rp.depthAttachment.texture = depth;
 			rp.depthAttachment.loadAction = clearDepth ? MTLLoadActionClear : MTLLoadActionLoad;
-			rp.depthAttachment.clearDepth = depthValue;
+			// 2026-11-15 (E6, Metal API validation): the clear value only when the pass clears; a loading pass keeps the default 1.0,
+			// since the validation layer refuses a descriptor whose clear depth is outside [0, 1] (the engine's phase split sent NaN).
+			rp.depthAttachment.clearDepth = clearDepth ? depthValue : 1.0;
 			rp.depthAttachment.storeAction = MTLStoreActionUnknown;
 		}
 		if (count == 0 && !depth) {
@@ -1687,7 +1626,68 @@ int mc_render_begin(Enc *enc, int count, id<MTLTexture> const *colors, const flo
 		openRender(enc, rp);
 		if (cpuPass && enc->samples) enc->cpuPassSampled = 1;
 	}
-	return 0;
+	return endedOpen ? 16 : 0;
+}
+
+// 2026-11-14 (draw dumps, DrawLog): one property of a texture for the picture dumps: 0 width, 1 height, 2 the MTLPixelFormat.
+int mc_dump_info(id<MTLTexture> tex, int what) {
+	if (!tex) return -1;
+	return what == 0 ? (int) tex.width : what == 1 ? (int) tex.height : (int) tex.pixelFormat;
+}
+
+// 2026-11-14 (draw dumps, DrawLog): the mip-0 texels of a texture as the work encoded so far leaves them, copied to dst
+// (width x height x bytesPerPixel, rows tight). The open encoders end; the texture is blitted into a shared buffer on the
+// frame's command buffer, which commits early and is waited for; the bytes are copied out. A render encoder that was open
+// is reopened on the same attachments with their contents loaded; its pass state is not restored here (the caller
+// restores a split pass when this returns 1). Returns 1 when an encoder was reopened, 0 when none was open, -1 when the GPU
+// failed the buffer. Diagnostic only: it commits the frame's command buffer in the middle of the frame.
+int mc_dump_readback(Enc *enc, id<MTLTexture> tex, int width, int height, int bytesPerPixel, int depth, void *dst) {
+	int wasOpen = enc->render != nil;
+	int colorCount = enc->colorCount < 8 ? enc->colorCount : 8;
+	id<MTLTexture> colors[8];
+	for (int i = 0; i < colorCount; i++) colors[i] = enc->colors[i];
+	id<MTLTexture> depthTex = enc->depth;
+	int rw = enc->width, rh = enc->height;
+	endBlit(enc);
+	endRender(enc);
+	NSUInteger rowBytes = (NSUInteger) width * (NSUInteger) bytesPerPixel;
+	id<MTLBuffer> out = [enc->ctx->device newBufferWithLength:rowBytes * (NSUInteger) height options:MTLResourceStorageModeShared];
+	[blit(enc) copyFromTexture:tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+		sourceSize:MTLSizeMake(width, height, 1) toBuffer:out destinationOffset:0 destinationBytesPerRow:rowBytes
+		destinationBytesPerImage:rowBytes * (NSUInteger) height
+		options:depth ? MTLBlitOptionDepthFromDepthStencil : MTLBlitOptionNone];
+	endBlit(enc);
+	id<MTLCommandBuffer> c = cmd(enc);
+	[c commit];
+	[c waitUntilCompleted];
+	int ok = c.status == MTLCommandBufferStatusCompleted;
+	[c release];
+	enc->cmd = nil;
+	if (ok) memcpy(dst, [out contents], rowBytes * (NSUInteger) height);
+	[out release];
+	if (wasOpen) {
+		@autoreleasepool {
+			MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+			for (int i = 0; i < colorCount; i++) {
+				if (!colors[i]) continue;
+				rp.colorAttachments[i].texture = colors[i];
+				rp.colorAttachments[i].loadAction = MTLLoadActionLoad;
+				rp.colorAttachments[i].storeAction = MTLStoreActionUnknown;
+			}
+			if (depthTex) {
+				rp.depthAttachment.texture = depthTex;
+				rp.depthAttachment.loadAction = MTLLoadActionLoad;
+				rp.depthAttachment.storeAction = MTLStoreActionUnknown;
+			}
+			if (colorCount == 0 && !depthTex) {
+				rp.renderTargetWidth = rw;
+				rp.renderTargetHeight = rh;
+				rp.defaultRasterSampleCount = 1;
+			}
+			openRender(enc, rp);
+		}
+	}
+	return ok ? wasOpen : -1;
 }
 
 // -Dmcms.metal.passTest=N,MODE (measurement only): N empty render passes at the head of the frame (every 20th), profiled like the frame's
@@ -1803,6 +1803,16 @@ void mc_r_pipeline(Enc *enc, id<MTLRenderPipelineState> pso, id<MTLDepthStencilS
 	enc->primitive = (MTLPrimitiveType) primitive;
 }
 
+// 2026-11-14 (E4, the classes check): mc_r_pipeline_w also sets the front-facing winding. The engine passes cw (0) for every
+// bind, pack and game alike: a translated pack program's vertex epilogue flips y, which mirrors GL's counter-clockwise front
+// faces into clockwise ones, and the game's own convention is clockwise (openRender's default). The flag stays so the winding
+// is always stated, never inherited from an earlier bind in the same pass.
+void mc_r_pipeline_w(Enc *enc, id<MTLRenderPipelineState> pso, id<MTLDepthStencilState> depth, int cull, int wireframe,
+	float biasConstant, float biasSlope, int primitive, int ccw) {
+	mc_r_pipeline(enc, pso, depth, cull, wireframe, biasConstant, biasSlope, primitive);
+	[enc->render setFrontFacingWinding:ccw ? MTLWindingCounterClockwise : MTLWindingClockwise];
+}
+
 void mc_r_buffer(Enc *enc, int index, id<MTLBuffer> buffer, uint64_t offset) {
 	[enc->render setVertexBuffer:buffer offset:offset atIndex:index];
 	[enc->render setFragmentBuffer:buffer offset:offset atIndex:index];
@@ -1828,17 +1838,16 @@ void mc_r_bytes(Enc *enc, int index, const void *bytes, int length) {
 	[enc->render setFragmentBytes:bytes length:length atIndex:index];
 }
 
-void mc_r_texture(Enc *enc, int index, id<MTLTexture> texture, id<MTLSamplerState> sampler) {
+// A texture at one index of both stages, with no sampler: a sampler belongs to a stage's sampler slot, never to the texture's index
+// (2026-11-15: the entity overlay bound its sampler at texture index 27, past the 16 sampler slots a stage has).
+void mc_r_texture(Enc *enc, int index, id<MTLTexture> texture) {
 	[enc->render setVertexTexture:texture atIndex:index];
 	[enc->render setFragmentTexture:texture atIndex:index];
-	if (sampler) {
-		[enc->render setVertexSamplerState:sampler atIndex:index];
-		[enc->render setFragmentSamplerState:sampler atIndex:index];
-	}
 }
 
-// M4: a texture and its sampler where the pipeline's sampler slots are not the texture's index (MetalPipeline numbers each stage's
-// samplers without gaps, and a texture a stage only fetches from gets none): the sampler goes to vslot and fslot, -1 for none.
+// M4: a texture and its sampler where the pipeline's sampler slots are not the texture's index. Each stage has its own sampler slots
+// (the reflection's, ProgramTranslation.SamplerUse): the sampler goes to vslot and fslot, -1 for none. Java (SamplerSlots) keeps
+// every slot in 0 to 15 before it gets here.
 void mc_r_texture_slots(Enc *enc, int index, id<MTLTexture> texture, id<MTLSamplerState> sampler, int vslot, int fslot) {
 	[enc->render setVertexTexture:texture atIndex:index];
 	[enc->render setFragmentTexture:texture atIndex:index];

@@ -50,6 +50,11 @@ class MetalBuffer extends BaseGpuBuffer {
 		}
 	}
 
+	/** Marks this buffer used by the submit being recorded: the GPU reads it there, so a later write waits (MetalEncoder.use). */
+	void markUsed() {
+		this.encoder.use(this);
+	}
+
 	/**
 	 * Moves this buffer onto other memory, for a write replacing all of it while the GPU may still read the old contents:
 	 * commands encoded before keep reading those, and the old memory is reused once this submit is done with it. False for

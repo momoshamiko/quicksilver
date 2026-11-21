@@ -5,10 +5,13 @@
  * rest of mcopt (MetalTerrain and its arena copy hold/invalidate, own.OwnProbe's in-run A/B of frameDepthDiscard, cpu.Cpu's fence
  * statistics and pass A/B); fence naming is now the plain property -Dmcms.metal.fence (default on); commitEarly added (VSync on);
  * the stats and GPU-profile lines are printed with println, because Minecraft's log keeps only println output; generateMipmaps
- * added (Vitrail's mip chains, through mixin.VitrailMipmapCommandsMixin). 2026-10-13 (M5): command buffers the GPU failed are
+ * added (Vitrail's mip chains, through mixin.VitrailMipmapCommandsMixin; removed at E10 with that mixin). 2026-10-13 (M5): command buffers the GPU failed are
  * logged (retire, from mcmetal.m cbWatch). After M5: the encoder log keeps the game's pass label of a render encoder that has
  * target info but no Metal label (mcopt kept only the native text there, so Vitrail's pass names were lost); the test switch
- * -Dmcms.metal.passLoadTest (don't-care instead of load for chosen passes).
+ * -Dmcms.metal.passLoadTest (don't-care instead of load for chosen passes). 2026-11-17 (E9): a pass the shaderpack runtime
+ * redirects keeps the game's main target's deferred clears (createRenderPass). 2026-11-17 (E9, ADR 0008): a redirected main-target
+ * pass's area and scissor scale to the redirect's render size (Redirect.scalesFromOwn), and a replacement depth can take the pass's
+ * own depth load action and clear value (Redirect.INHERIT_CLEAR).
  */
 package dev.mcms.metal;
 
@@ -113,11 +116,15 @@ final class MetalEncoder implements CommandEncoderBackend {
 	 * texture still reads its clear wherever it is read.
 	 */
 	static final boolean LAZY_CLEARS = Boolean.getBoolean("mcms.metal.lazyClears");
+	/** This encoder's setting (LAZY_CLEARS unless a test builds it otherwise). */
+	final boolean lazyClears;
 	private long[] passColors = new long[8];
 	private int passColorCount, passWidth, passHeight;
 	private long passDepth;
 	private boolean passLazy;
 	private long lazySplits, lazySplitLog;
+	/** The split a delegate's group switch uses: the open pass is split through it (PassDelegate.PassSplitter). */
+	private final PassDelegate.PassSplitter passSplitter = this::splitCurrentPass;
 	private long submitIndex;
 	private long completedIndex = -1;
 	/** Render encoders opened in this submit; the trace's #numbers, which the GPU profile lines refer to. */
@@ -136,7 +143,13 @@ final class MetalEncoder implements CommandEncoderBackend {
 	}
 
 	MetalEncoder(long ctx) {
+		this(ctx, LAZY_CLEARS);
+	}
+
+	/** The encoder with its lazy-clears setting given (the GPU tests drive both settings; the game passes LAZY_CLEARS). */
+	MetalEncoder(long ctx, boolean lazyClears) {
 		this.ctx = ctx;
+		this.lazyClears = lazyClears;
 		this.enc = Native.encNew(ctx);
 		if (GPU_TIMES) GpuTimes.initialize();
 		this.transientMemory = new MetalTransientMemory(ctx, this);
@@ -354,12 +367,27 @@ final class MetalEncoder implements CommandEncoderBackend {
 		PassDelegate keptDelegate = redirect != null && redirect.keepsAttachments() ? redirect.delegate() : null;
 		if (keptDelegate != null) redirect = null;
 		List<RenderPassDescriptor.@Nullable Attachment<Optional<Vector4fc>>> colors = redirect != null ? List.of() : descriptor.colorAttachments();
-		RenderPassDescriptor.@Nullable Attachment<OptionalDouble> depth = redirect != null && redirect.depth() != 0 ? null : descriptor.depthAttachment();
+		// A replacement depth that inherits the pass's clear (ADR 0008) still reads the pass's own depth attachment for it.
+		boolean inheritDepth = redirect != null && redirect.inheritsDepthClear();
+		RenderPassDescriptor.@Nullable Attachment<OptionalDouble> depth = redirect != null && redirect.depth() != 0 && !inheritDepth ? null : descriptor.depthAttachment();
 		// Anything sampled inside this pass must have its deferred clear in memory before the pass starts (with lazyClears: when it's bound)
-		boolean lazy = LAZY_CLEARS && redirect == null && keptDelegate == null;
+		boolean lazy = this.lazyClears && redirect == null && keptDelegate == null;
+		// E9: a pass redirected by a redirector that keeps the main target's clears (the shaderpack runtime's: its passes never
+		// sample the game's main target) leaves that target's colour and depth clears deferred: the runtime flushes or drops the
+		// colour's in its composite hook, and the depth's folds into the next pass that draws to it. Flushed here, the colour's
+		// clear was an empty pass that waited for the previous frame's last pass (which draws that colour) and held up the passes
+		// after it on the GPU. With lazyClears a sampled texture's clear is written at its bind, which a redirected pass does not
+		// reopen after, so the old flush stays then.
+		MetalTexture mainColor = null, mainDepth = null;
+		net.minecraft.client.Minecraft mc = redirect != null && !this.lazyClears && redirector.keepsMainTargetClears()
+			? net.minecraft.client.Minecraft.getInstance() : null;
+		if (mc != null && mc.gameRenderer != null) {  // (no game in the headless tests)
+			if (mc.gameRenderer.mainRenderTarget().getColorTexture() instanceof MetalTexture c) mainColor = c;
+			if (mc.gameRenderer.mainRenderTarget().getDepthTexture() instanceof MetalTexture d) mainDepth = d;
+		}
 		for (MetalTexture t : List.copyOf(this.pendingClears)) {
 			if (t.isClosed()) this.pendingClears.remove(t);
-			else if (!lazy && !this.isAttachment(t, colors, depth)) this.flushClear(t);
+			else if (!lazy && t != mainColor && t != mainDepth && !this.isAttachment(t, colors, depth)) this.flushClear(t);
 		}
 		if (FrameLog.ON && FrameLog.inTick()) {
 			var c0 = descriptor.colorAttachments().isEmpty() ? null : descriptor.colorAttachments().get(0);
@@ -368,6 +396,7 @@ final class MetalEncoder implements CommandEncoderBackend {
 			FrameLog.tickPass(descriptor.label().get() + " -> " + target + " area " + descriptor.renderArea(), v0 == null ? 0 : (long) v0.getWidth(0) * v0.getHeight(0));
 		}
 		int width = 0, height = 0;
+		long depthHandle = 0;
 		try (MemoryStack stack = MemoryStack.stackPush()) {
 			long colorHandles = stack.nmalloc(8, Math.max(1, colors.size()) * 8);
 			long clears = stack.ncalloc(4, Math.max(1, colors.size()) * 5, 4);
@@ -387,7 +416,6 @@ final class MetalEncoder implements CommandEncoderBackend {
 				}
 				MemoryUtil.memPutAddress(colorHandles + i * 8L, handle);
 			}
-			long depthHandle = 0;
 			boolean clearDepth = false;
 			double depthValue = 0;
 			if (depth != null) {
@@ -412,18 +440,23 @@ final class MetalEncoder implements CommandEncoderBackend {
 					MemoryUtil.memPutAddress(colorHandles + i * 8L, redirect.colors()[i]);
 					float[] c = redirect.clears() == null ? null : redirect.clears()[i];
 					if (c != null && c.length == 0) MemoryUtil.memPutFloat(clears + i * 20L, 2); // MetalBridge.DONT_CARE: not loaded
-					else if (c != null) putClear(clears + i * 20L, new org.joml.Vector4f(c[0], c[1], c[2], c[3]));
+					else if (c != null) putClear(clears + i * 20L, c[0], c[1], c[2], c[3]);
 				}
 				colorCount = redirect.colors().length;
 				width = redirect.width();
 				height = redirect.height();
 				if (redirect.depth() != 0) {
 					depthHandle = redirect.depth();
-					clearDepth = !Float.isNaN(redirect.depthClear());
-					depthValue = clearDepth ? redirect.depthClear() : 0;
+					if (!inheritDepth) {
+						clearDepth = !Float.isNaN(redirect.depthClear());
+						depthValue = clearDepth ? redirect.depthClear() : 0;
+					}
+					// inheritDepth: clearDepth and depthValue are the pass's own depth attachment's, read above (none: load)
 				}
 			}
-			int continued = Native.renderBegin(this.enc, colorCount, colorHandles, clears, depthHandle, clearDepth ? 1 : 0, (float) depthValue, width, height);
+			int raw = Native.renderBegin(this.enc, colorCount, colorHandles, clears, depthHandle, clearDepth ? 1 : 0, (float) depthValue, width, height);
+			int continued = raw & RENDER_MODE;
+			traceBegin("pass", raw, colorCount, colorHandles, clears, depthHandle, clearDepth);
 			this.passLazy = lazy && colorCount <= this.passColors.length;
 			if (this.passLazy) {
 				for (int i = 0; i < colorCount; i++) this.passColors[i] = MemoryUtil.memGetAddress(colorHandles + i * 8L);
@@ -432,8 +465,8 @@ final class MetalEncoder implements CommandEncoderBackend {
 				this.passWidth = width;
 				this.passHeight = height;
 			}
-			if (redirect != null) redirect.delegate().begin(this.enc, depthHandle != 0);
-			if (keptDelegate != null) keptDelegate.begin(this.enc, depthHandle != 0);
+			if (redirect != null) redirect.delegate().begin(this.enc, depthHandle != 0, this.passSplitter);
+			if (keptDelegate != null) keptDelegate.begin(this.enc, depthHandle != 0, this.passSplitter);
 			MetalHooks.Labeler labeler = MetalHooks.labeler;
 			if (labeler != null && continued == 0) labeler.label(this.enc, "game " + descriptor.label().get());
 			if (ENC_LOG && continued == 0) {
@@ -454,13 +487,55 @@ final class MetalEncoder implements CommandEncoderBackend {
 			if (continued == 0) this.encoderIndex++;
 		}
 		var area = descriptor.renderArea();
-		if (redirect != null && redirect.depth() != 0) {
-			this.currentPass = new MetalRenderPass(this, true, 0, 0, redirect.width(), redirect.height(), redirect.delegate());
+		if (redirect != null) {
+			// The redirect's targets may be smaller than the pass's own (ADR 0008's render scale): a main-target pass's area and
+			// every scissor rect the game sets scale from the pass's own attachment size to the redirect's (at one size the
+			// factors are 1). A redirect whose targets are not the main target's (the shadow map, Distant Horizons) takes them as
+			// they are.
+			float sx = redirect.scalesFromOwn() ? scaleOf(redirect.width(), ownWidth(descriptor)) : 1f;
+			float sy = redirect.scalesFromOwn() ? scaleOf(redirect.height(), ownHeight(descriptor)) : 1f;
+			if (redirect.depth() != 0 && !inheritDepth) {
+				this.currentPass = new MetalRenderPass(this, true, 0, 0, redirect.width(), redirect.height(), redirect.delegate(),
+					depthHandle, width, height, sx, sy);
+				return this.currentPass;
+			}
+			int x0 = MetalRenderPass.scaleLow(area.x(), sx), y0 = MetalRenderPass.scaleLow(area.y(), sy);
+			int x1 = MetalRenderPass.scaleHigh(area.x() + area.width(), sx, redirect.width());
+			int y1 = MetalRenderPass.scaleHigh(area.y() + area.height(), sy, redirect.height());
+			this.currentPass = new MetalRenderPass(this, depthHandle != 0, Math.min(x0, x1), Math.min(y0, y1),
+				Math.max(0, x1 - x0), Math.max(0, y1 - y0), redirect.delegate(), depthHandle, width, height, sx, sy);
 			return this.currentPass;
 		}
 		this.currentPass = new MetalRenderPass(this, depth != null, area.x(), area.y(), area.width(), area.height(),
-			redirect != null ? redirect.delegate() : keptDelegate);
+			keptDelegate, depthHandle, width, height, 1f, 1f);
 		return this.currentPass;
+	}
+
+	/** The factor from a pass's own attachment size to its redirect's; 1 when the own size is unknown (0). */
+	private static float scaleOf(int redirected, int own) {
+		return own > 0 && redirected != own ? (float) redirected / own : 1f;
+	}
+
+	/** The width of a pass's own attachments: its first colour attachment's, else its depth attachment's, else 0. */
+	private static int ownWidth(RenderPassDescriptor descriptor) {
+		MetalTexture.@Nullable View view = ownView(descriptor);
+		return view == null ? 0 : view.getWidth(0);
+	}
+
+	/** The height of a pass's own attachments (see {@link #ownWidth}). */
+	private static int ownHeight(RenderPassDescriptor descriptor) {
+		MetalTexture.@Nullable View view = ownView(descriptor);
+		return view == null ? 0 : view.getHeight(0);
+	}
+
+	private static MetalTexture.@Nullable View ownView(RenderPassDescriptor descriptor) {
+		var colors = descriptor.colorAttachments();
+		var first = colors.isEmpty() ? null : colors.get(0);
+		if (first != null) {
+			return (MetalTexture.View) first.textureView();
+		}
+		var depthAttachment = descriptor.depthAttachment();
+		return depthAttachment == null ? null : (MetalTexture.View) depthAttachment.textureView();
 	}
 
 	private boolean isAttachment(MetalTexture t, List<RenderPassDescriptor.@Nullable Attachment<Optional<Vector4fc>>> colors,
@@ -513,20 +588,151 @@ final class MetalEncoder implements CommandEncoderBackend {
 			this.flushClear(t);
 			return;
 		}
+		traceSplit("flushClearInPass", t.handle);
 		this.flushClear(t);  // (ends the open render encoder: other attachments)
 		try (MemoryStack stack = MemoryStack.stackPush()) {
 			long colors = stack.nmalloc(8, Math.max(1, this.passColorCount) * 8);
 			long clears = stack.ncalloc(4, Math.max(1, this.passColorCount) * 5, 4);  // all zero: load
 			for (int i = 0; i < this.passColorCount; i++) MemoryUtil.memPutAddress(colors + i * 8L, this.passColors[i]);
-			Native.renderBegin(this.enc, this.passColorCount, colors, clears, this.passDepth, 0, 0, this.passWidth, this.passHeight);
+			int raw = Native.renderBegin(this.enc, this.passColorCount, colors, clears, this.passDepth, 0, 0, this.passWidth, this.passHeight);
+			traceBegin("restoreOpen", raw, this.passColorCount, colors, clears, this.passDepth, false);
 		}
-		this.currentPass.restoreAfterSplit();
+		this.currentPass.restoreAfterSplit(true);
 		this.lazySplits++;
 		long now = System.nanoTime();
 		if (now - this.lazySplitLog > 10_000_000_000L) {
 			System.out.println("mcms-metal: lazy clears split a pass " + this.lazySplits + " times so far (" + t.getLabel() + ")");
 			this.lazySplitLog = now;
 		}
+	}
+
+	/**
+	 * 2026-11-14 (E4, ADR 0006): splits the open render pass onto other attachments (the shader engine's phase split):
+	 * opens a new render encoder on {@code colors}/{@code depth} the way a redirected pass opens (a clears entry null
+	 * loads, {@code MetalBridge.DONT_CARE} discards, else a clear colour), then restores the frontend pass's state
+	 * (restoreAfterSplit re-runs a delegate's setPipeline), so the game's draws continue on the new attachments as if
+	 * nothing had happened. The engine calls it at the opaque/translucent boundary of the "Solid" pass and wherever a
+	 * phase's attachment set changes.
+	 */
+	void splitRenderPass(long[] colors, float @Nullable [][] clears, long depth, boolean clearDepth, float depthValue,
+			int width, int height) {
+		splitTo("split", colors, clears, depth, clearDepth, depthValue, width, height, true);
+	}
+
+	/**
+	 * The backend state of an open render pass, saved while another pass (Distant Horizons' transparent call, inside the phase hook)
+	 * runs in its place: the logical pass object, the lazy-clears flag, and the attachments the pass last split onto. A holder, reused
+	 * across frames: {@link #suspendPass} fills it, {@link #resumePass} reads it back.
+	 */
+	static final class PassSuspension {
+		@Nullable MetalRenderPass pass;
+		boolean lazy;
+		final long[] colors = new long[8];
+		int colorCount, width, height;
+		long depth;
+	}
+
+	/**
+	 * Suspends the open pass: its state is saved into {@code into}, and the encoder has no pass until {@link #resumePass}. The native
+	 * encoder stays as it is: the next pass opened on this encoder ends it, as any pass opened after the game's own does, and the resume's
+	 * split (the game's phase split) reopens the pass on its attachments.
+	 */
+	void suspendPass(PassSuspension into) {
+		into.pass = this.currentPass;
+		into.lazy = this.passLazy;
+		System.arraycopy(this.passColors, 0, into.colors, 0, into.colors.length);
+		into.colorCount = this.passColorCount;
+		into.depth = this.passDepth;
+		into.width = this.passWidth;
+		into.height = this.passHeight;
+		this.currentPass = null;
+		this.passLazy = false;
+	}
+
+	/** Restores the state {@link #suspendPass} saved: every field it saved is put back, so the pass object continues as it was. */
+	void resumePass(PassSuspension saved) {
+		this.currentPass = saved.pass;
+		this.passLazy = saved.lazy;
+		System.arraycopy(saved.colors, 0, this.passColors, 0, Math.min(saved.colors.length, this.passColors.length));
+		this.passColorCount = saved.colorCount;
+		this.passDepth = saved.depth;
+		this.passWidth = saved.width;
+		this.passHeight = saved.height;
+		// The suspended pass's delegate was ended by the pass drawn in its place (MetalRenderPass.end clears a delegate's splitter and
+		// state), so it takes the pass back here, as createRenderPass begins it: a later group switch of the game's pass needs the splitter.
+		if (saved.pass != null && saved.pass.delegate() != null) {
+			saved.pass.delegate().resume(this.enc, saved.pass.hasDepth(), this.passSplitter);
+		}
+	}
+
+	/** The open pass's attachments as the encoder records them (for the DrawLog's suspend and resume lines). */
+	String passDescription() {
+		StringBuilder sb = new StringBuilder("pass=").append(this.currentPass != null).append(" lazy=").append(this.passLazy)
+			.append(" colors=[");
+		for (int i = 0; i < this.passColorCount; i++) {
+			sb.append(i == 0 ? "" : ",").append(Long.toHexString(this.passColors[i]));
+		}
+		return sb.append("] depth=").append(Long.toHexString(this.passDepth)).append(' ').append(this.passWidth).append('x')
+			.append(this.passHeight).toString();
+	}
+
+	/**
+	 * A split under its trace label: "split" for the engine's splits, "group" for a delegate's attachment-group switch. The split
+	 * records the depth and size it opened on, so a later group switch reopens on them. {@code reapply}: the pass's pipeline is
+	 * set again after the split (see MetalRenderPass.restoreAfterSplit).
+	 */
+	private void splitTo(String why, long[] colors, float @Nullable [][] clears, long depth, boolean clearDepth,
+			float depthValue, int width, int height, boolean reapply) {
+		try (MemoryStack stack = MemoryStack.stackPush()) {
+			long colorHandles = stack.nmalloc(8, Math.max(1, colors.length) * 8);
+			long clearData = stack.ncalloc(4, Math.max(1, colors.length) * 5, 4);
+			for (int i = 0; i < colors.length; i++) {
+				MemoryUtil.memPutAddress(colorHandles + i * 8L, colors[i]);
+				float[] c = clears == null ? null : clears[i];
+				if (c != null && c.length == 0) {
+					MemoryUtil.memPutFloat(clearData + i * 20L, 2);
+				} else if (c != null) {
+					putClear(clearData + i * 20L, c[0], c[1], c[2], c[3]);
+				}
+			}
+			int raw = Native.renderBegin(this.enc, colors.length, colorHandles, clearData, depth, clearDepth ? 1 : 0, depthValue,
+				width, height);
+			traceBegin(why, raw, colors.length, colorHandles, clearData, depth, clearDepth);
+		}
+		if (this.currentPass != null) {
+			this.currentPass.splitOn(depth, width, height);
+			this.currentPass.restoreAfterSplit(reapply);
+		}
+		// The split's attachments are the open pass's now: a later lazy-clears split reopens the pass on these (E4 review
+		// item 10; before, it reopened on the attachments from before this split).
+		this.passLazy = this.passLazy && this.currentPass != null && colors.length <= this.passColors.length;
+		if (this.passLazy) {
+			for (int i = 0; i < colors.length; i++) this.passColors[i] = colors[i];
+			this.passColorCount = colors.length;
+			this.passDepth = depth;
+			this.passWidth = width;
+			this.passHeight = height;
+		}
+	}
+
+	/**
+	 * The delegate's split of the open pass onto another attachment group (PassDelegate.PassSplitter): the depth and size the
+	 * pass last split onto, colours loaded. The pipeline is not set here: the delegate binds it once, after the split.
+	 */
+	private void splitCurrentPass(long[] colors) {
+		MetalRenderPass pass = this.currentPass;
+		if (pass == null) {
+			throw new IllegalStateException("a delegate split a render pass that is not open");
+		}
+		splitTo("group", colors, null, pass.depth, false, 0f, pass.targetWidth, pass.targetHeight, false);
+	}
+
+	private static void putClear(long at, float r, float g, float b, float a) {
+		MemoryUtil.memPutFloat(at, 1);
+		MemoryUtil.memPutFloat(at + 4, r);
+		MemoryUtil.memPutFloat(at + 8, g);
+		MemoryUtil.memPutFloat(at + 12, b);
+		MemoryUtil.memPutFloat(at + 16, a);
 	}
 
 	/** Writes a deferred clear to memory with an empty pass: needed when the texture is read before it is drawn to. */
@@ -539,8 +745,10 @@ final class MetalEncoder implements CommandEncoderBackend {
 			MemoryUtil.memPutAddress(colors, depthFormat ? 0 : t.handle);
 			if (t.pendingColorClear != null) putClear(clears, t.pendingColorClear);
 			boolean clearDepth = !Double.isNaN(t.pendingDepthClear);
-			int continued = Native.renderBegin(this.enc, depthFormat ? 0 : 1, colors, clears, depthFormat ? t.handle : 0, clearDepth ? 1 : 0,
+			int raw = Native.renderBegin(this.enc, depthFormat ? 0 : 1, colors, clears, depthFormat ? t.handle : 0, clearDepth ? 1 : 0,
 				clearDepth ? (float) t.pendingDepthClear : 0, t.getWidth(0), t.getHeight(0));
+			int continued = raw & RENDER_MODE;
+			traceBegin("flushClear", raw, depthFormat ? 0 : 1, colors, clears, depthFormat ? t.handle : 0, clearDepth);
 			this.trace(continued == 0 ? "flushClear #" + this.encoderIndex : "flushClear (in place)", t);
 			if (continued == 0) this.encoderIndex++;
 		}
@@ -551,6 +759,42 @@ final class MetalEncoder implements CommandEncoderBackend {
 
 	void flushClear(GpuTexture t) {
 		this.flushClear((MetalTexture) t);
+	}
+
+	/** After a picture readback reopened the render encoder (2026-11-14, draw dumps): the open pass's state is set again. */
+	void restoreOpenPass() {
+		if (this.currentPass != null) {
+			this.currentPass.restoreAfterSplit(true);
+		}
+	}
+
+	/** The native flags mc_render_begin returns: the mode in the low bits, and RENDER_ENDED_OPEN when it ended an open encoder. */
+	static final int RENDER_MODE = 3, RENDER_ENDED_OPEN = 16;
+
+	/**
+	 * Reports a render encoder's begin to the draw log's hook (MetalHooks.encoderTrace; null while the log is off). The
+	 * attachments' textures and load actions are read from the arrays the begin was given (valid inside its try block).
+	 */
+	private static void traceBegin(String why, int raw, int count, long colorHandles, long clears, long depth, boolean clearDepth) {
+		MetalHooks.EncoderTrace trace = MetalHooks.encoderTrace;
+		if (trace == null) {
+			return;
+		}
+		long[] colors = new long[count];
+		int[] loads = new int[count];
+		for (int i = 0; i < count; i++) {
+			colors[i] = MemoryUtil.memGetAddress(colorHandles + i * 8L);
+			loads[i] = (int) MemoryUtil.memGetFloat(clears + i * 20L);
+		}
+		trace.begin(why, raw & RENDER_MODE, (raw & RENDER_ENDED_OPEN) != 0, colors, loads, depth, clearDepth);
+	}
+
+	/** Reports a split of the open render pass to the draw log's hook (null while it is off). */
+	private static void traceSplit(String why, long texture) {
+		MetalHooks.EncoderTrace trace = MetalHooks.encoderTrace;
+		if (trace != null) {
+			trace.split(why, texture);
+		}
 	}
 
 	private void deferClear(GpuTexture texture, @Nullable Vector4fc color, double depth) {
@@ -700,23 +944,6 @@ final class MetalEncoder implements CommandEncoderBackend {
 		this.flushClear(destination);
 		Native.blitTextureToTexture(this.enc, ((MetalTexture) source).handle, ((MetalTexture) destination).handle, mip, destX, destY, sourceX, sourceY,
 			width, height);
-	}
-
-	/**
-	 * MC Metal Shaders: fills every mip level past the base from the one above (Metal's 2x2 linear reduction, as Vitrail's Vulkan
-	 * blit chain and glGenerateMipmap do). Vitrail asks for it through its {@code MipmapCommands} before a pack program reads a
-	 * target at a lod; without the chain, Vitrail binds those targets at level 0, and BSL's exposure, a read of colortex0 at the
-	 * screen centre at a lod near the top of the chain, sees one pixel. False (nothing recorded) inside a pass, for a texture
-	 * without levels, and for depth and integer formats, which Vitrail then keeps reading at the base level.
-	 */
-	boolean generateMipmaps(GpuTexture texture) {
-		if (this.currentPass != null || !(texture instanceof MetalTexture metal) || texture.isClosed() || texture.getMipLevels() <= 1
-			|| !MetalConst.mipmapReducible(texture.getFormat())) {
-			return false;
-		}
-		this.trace("generateMipmaps", texture, texture.getMipLevels() + " levels");
-		this.flushClear(texture);
-		return Native.blitGenerateMipmaps(this.enc, metal.handle) != 0;
 	}
 
 	@Override
