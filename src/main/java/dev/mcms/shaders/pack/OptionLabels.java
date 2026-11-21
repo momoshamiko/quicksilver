@@ -41,6 +41,11 @@ public final class OptionLabels {
 		return option.tooltip() == null ? "" : option.tooltip();
 	}
 
+	/** Whether the pack defines an explicit {@code value.X.v} label for this option value. */
+	public boolean hasValueLabel(String option, String value) {
+		return lookup("value." + option + "." + value).isPresent();
+	}
+
 	/** A value's label: {@code value.X.v}, else the value text. */
 	public String valueLabel(String option, String value) {
 		return lookup("value." + option + "." + value).orElse(value);

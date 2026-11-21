@@ -276,9 +276,11 @@ public final class GbufferDelegate implements PassDelegate {
 	/** The bytes of {@code QsDraw}: the schema's padded size, so the one block write covers every member. */
 	private static final int DRAW_BYTES = Std140.paddedSize(ProgramRequests.DRAW_BLOCK);
 	/**
-	 * The offset of the game's {@code ColorModulator} in {@code DynamicTransforms} (26.3 assets/minecraft/shaders/include/
-	 * dynamictransforms.glsl: {@code mat4 ModelViewMat; mat4 TextureMat; vec4 ColorModulator; vec3 ModelOffset;}, std140).
+	 * The offsets of the game's {@code TextureMat} and {@code ColorModulator} in {@code DynamicTransforms} (26.3
+	 * assets/minecraft/shaders/include/dynamictransforms.glsl: {@code mat4 ModelViewMat; mat4 TextureMat;
+	 * vec4 ColorModulator; vec3 ModelOffset;}, std140).
 	 */
+	private static final int TRANSFORMS_TEXTURE_MAT = 64;
 	private static final int TRANSFORMS_COLOR_MODULATOR = 128;
 	/** The bytes of a std140 vec4 (the game's ColorModulator and the draw's colorModulator). */
 	private static final int VEC4_BYTES = 16;
@@ -393,6 +395,8 @@ public final class GbufferDelegate implements PassDelegate {
 
 	/** The constant bytes registered by slot (null = none); {@link #constantBytes} fills it. */
 	private final MemorySegment[] constantSegments = new MemorySegment[34];
+	/** Bitmask of non-null slots in {@link #constantSegments} so draws skip scanning empty slots. */
+	private long constantSegmentMask;
 
 	/** Native scratch the draw's {@code QsDraw} bytes are written to; freed by {@link #close}. */
 	private final long drawScratch = MemoryUtil.nmemCalloc(1, DRAW_BYTES);
@@ -424,6 +428,9 @@ public final class GbufferDelegate implements PassDelegate {
 	private final Matrix4f modelViewInverse = new Matrix4f();
 	private final Matrix4f projection = new Matrix4f();
 	private final Matrix4f projectionInverse = new Matrix4f();
+	private final Matrix4f cachedProjection = new Matrix4f();
+	private boolean projectionInverseValid;
+	private final Matrix4f identityMatrix = new Matrix4f();
 	private final Matrix3f normal = new Matrix3f();
 	private boolean closed;
 	/** The game uniform names of the pipeline being set, reused by {@link #setPipeline} (a pipeline switch allocates nothing). */
@@ -629,6 +636,11 @@ public final class GbufferDelegate implements PassDelegate {
 	public void constantBytes(int slot, @Nullable MemorySegment bytes) {
 		if (slot >= 0 && slot < this.constantSegments.length) {
 			this.constantSegments[slot] = bytes;
+			if (bytes != null) {
+				this.constantSegmentMask |= (1L << slot);
+			} else {
+				this.constantSegmentMask &= ~(1L << slot);
+			}
 		}
 	}
 
@@ -1378,7 +1390,8 @@ public final class GbufferDelegate implements PassDelegate {
 			idsDefault = !this.vertexIds.bind(enc, pv.perVertexIdSlot(), this.vertexHandle, this.drawStride,
 				this.vertexIdDefaults());
 		}
-		for (int slot = 0; slot < this.constantSegments.length; slot++) {
+		for (long mask = this.constantSegmentMask; mask != 0L; mask &= mask - 1L) {
+			int slot = Long.numberOfTrailingZeros(mask);
 			MemorySegment bytes = this.constantSegments[slot];
 			if (bytes != null) {
 				MetalBridge.renderBytesAt(enc, slot, bytes.address(), (int) bytes.byteSize());
@@ -1423,7 +1436,11 @@ public final class GbufferDelegate implements PassDelegate {
 			this.projection.set(distant.projection());  // E7: DH's projection, in OpenGL's depth convention
 		}
 		this.modelView.invert(this.modelViewInverse);
-		this.projection.invert(this.projectionInverse);
+		if (!this.projectionInverseValid || !this.projection.equals(this.cachedProjection)) {
+			this.projection.invert(this.projectionInverse);
+			this.cachedProjection.set(this.projection);
+			this.projectionInverseValid = true;
+		}
 		this.modelView.get3x3(this.normal).invert().transpose();
 
 		long at = this.drawScratch;
@@ -1433,8 +1450,14 @@ public final class GbufferDelegate implements PassDelegate {
 		MemoryUtil.memPutInt(at + OFF_ATLAS_SIZE + 4, this.atlasSizeScratch[1]);
 		if (this.transformsSeen) {
 			MemoryUtil.memCopy(this.modelViewAddress + TRANSFORMS_COLOR_MODULATOR, at + OFF_COLOR_MODULATOR, VEC4_BYTES);
+			if (MemoryUtil.memGetFloat(this.modelViewAddress + TRANSFORMS_TEXTURE_MAT + 60) != 0f) {
+				MemoryUtil.memCopy(this.modelViewAddress + TRANSFORMS_TEXTURE_MAT, at + OFF_TEXTURE, MATRIX_BYTES);
+			} else {
+				putMatrix(at + OFF_TEXTURE, this.identityMatrix);
+			}
 		} else {
 			putWhite(at + OFF_COLOR_MODULATOR);
+			putMatrix(at + OFF_TEXTURE, this.identityMatrix);
 		}
 		putMatrix(at + OFF_MODEL_VIEW, this.modelView);
 		putMatrix(at + OFF_PROJECTION, this.projection);

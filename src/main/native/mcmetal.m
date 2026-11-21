@@ -62,45 +62,67 @@ static NSString *presentSource = @
 
 Ctx *mc_create(char *name, int nameCap, char *err, int errCap) {
 	@autoreleasepool {
-		id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-		if (!device) { copyError(nil, err, errCap); return NULL; }
-		NSError *e = nil;
-		id<MTLLibrary> lib = [device newLibraryWithSource:presentSource options:nil error:&e];
-		if (!lib) { copyError(e, err, errCap); return NULL; }
-		MTLRenderPipelineDescriptor *pd = [[MTLRenderPipelineDescriptor new] autorelease];
-		pd.vertexFunction = [[lib newFunctionWithName:@"present_vs"] autorelease];
-		pd.fragmentFunction = [[lib newFunctionWithName:@"present_fs"] autorelease];
-		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-		id<MTLRenderPipelineState> present = [device newRenderPipelineStateWithDescriptor:pd error:&e];
-		if (!present) { copyError(e, err, errCap); return NULL; }
-		MTLSamplerDescriptor *sd = [[MTLSamplerDescriptor new] autorelease];
-		sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterNearest;
-		MTLDepthStencilDescriptor *dd = [[MTLDepthStencilDescriptor new] autorelease];
-		dd.depthCompareFunction = MTLCompareFunctionAlways;
+		@try {
+			id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+			if (!device) { copyError(nil, err, errCap); return NULL; }
+			NSError *e = nil;
+			id<MTLLibrary> lib = [device newLibraryWithSource:presentSource options:nil error:&e];
+			if (!lib) { copyError(e, err, errCap); [device release]; return NULL; }
+			MTLRenderPipelineDescriptor *pd = [[MTLRenderPipelineDescriptor new] autorelease];
+			pd.vertexFunction = [[lib newFunctionWithName:@"present_vs"] autorelease];
+			pd.fragmentFunction = [[lib newFunctionWithName:@"present_fs"] autorelease];
+			pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+			id<MTLRenderPipelineState> present = [device newRenderPipelineStateWithDescriptor:pd error:&e];
+			if (!present) { copyError(e, err, errCap); [lib release]; [device release]; return NULL; }
+			MTLSamplerDescriptor *sd = [[MTLSamplerDescriptor new] autorelease];
+			sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterNearest;
+			MTLDepthStencilDescriptor *dd = [[MTLDepthStencilDescriptor new] autorelease];
+			dd.depthCompareFunction = MTLCompareFunctionAlways;
 
-		Ctx *ctx = calloc(1, sizeof(Ctx));
-		ctx->device = device;
-		ctx->queue = [device newCommandQueueWithMaxCommandBufferCount:64];
-		ctx->builtins = lib;
-		ctx->present = present;
-		ctx->presentSampler = [device newSamplerStateWithDescriptor:sd];
-		ctx->clearPipelines = [NSMutableDictionary new];
-		ctx->depthKeep = [device newDepthStencilStateWithDescriptor:dd];
-		dd.depthWriteEnabled = YES;
-		ctx->depthWrite = [device newDepthStencilStateWithDescriptor:dd];
-		ctx->fanIndices = [device newBufferWithLength:(FAN_MAX_VERTICES - 2) * 3 * sizeof(uint32_t) options:MTLResourceStorageModeShared];
-		uint32_t *fan = ctx->fanIndices.contents;
-		for (uint32_t k = 0; k < FAN_MAX_VERTICES - 2; k++) {
-			fan[k * 3] = 0;
-			fan[k * 3 + 1] = k + 1;
-			fan[k * 3 + 2] = k + 2;
+			id<MTLCommandQueue> queue = [device newCommandQueueWithMaxCommandBufferCount:64];
+			id<MTLSamplerState> presentSampler = [device newSamplerStateWithDescriptor:sd];
+			id<MTLDepthStencilState> depthKeep = [device newDepthStencilStateWithDescriptor:dd];
+			dd.depthWriteEnabled = YES;
+			id<MTLDepthStencilState> depthWrite = [device newDepthStencilStateWithDescriptor:dd];
+			id<MTLBuffer> fanIndices = [device newBufferWithLength:(FAN_MAX_VERTICES - 2) * 3 * sizeof(uint32_t) options:MTLResourceStorageModeShared];
+			if (!queue || !presentSampler || !depthKeep || !depthWrite || !fanIndices) {
+				[queue release]; [presentSampler release]; [depthKeep release]; [depthWrite release]; [fanIndices release];
+				[present release]; [lib release]; [device release];
+				if (err && errCap > 0) strlcpy(err, "Metal device initialization failed", errCap);
+				return NULL;
+			}
+			Ctx *ctx = calloc(1, sizeof(Ctx));
+			if (!ctx) {
+				[queue release]; [presentSampler release]; [depthKeep release]; [depthWrite release]; [fanIndices release];
+				[present release]; [lib release]; [device release];
+				return NULL;
+			}
+			ctx->device = device;
+			ctx->queue = queue;
+			ctx->builtins = lib;
+			ctx->present = present;
+			ctx->presentSampler = presentSampler;
+			ctx->clearPipelines = [NSMutableDictionary new];
+			ctx->depthKeep = depthKeep;
+			ctx->depthWrite = depthWrite;
+			ctx->fanIndices = fanIndices;
+			uint32_t *fan = ctx->fanIndices.contents;
+			for (uint32_t k = 0; k < FAN_MAX_VERTICES - 2; k++) {
+				fan[k * 3] = 0;
+				fan[k * 3 + 1] = k + 1;
+				fan[k * 3 + 2] = k + 2;
+			}
+			if (name && nameCap > 0) strlcpy(name, device.name ? device.name.UTF8String : "Metal", nameCap);
+			return ctx;
+		} @catch (NSException *ex) {
+			if (err && errCap > 0) strlcpy(err, ex.reason ? ex.reason.UTF8String : "Metal exception", errCap);
+			return NULL;
 		}
-		strlcpy(name, device.name.UTF8String, nameCap);
-		return ctx;
 	}
 }
 
-uint64_t mc_max_buffer_length(Ctx *ctx) { return ctx->device.maxBufferLength; }
+uint64_t mc_max_buffer_length(Ctx *ctx) { return ctx && ctx->device ? ctx->device.maxBufferLength : 0; }
+uint64_t mc_recommended_working_set(Ctx *ctx) { return ctx && ctx->device ? ctx->device.recommendedMaxWorkingSetSize : 0; }
 
 // ---- live Metal objects by kind (M5, spec S4: which allocation stays after a teleport; on with -Dmcms.metal.memLog) ----
 // Every object the allocation functions below make carries a McTrack (an associated object). The runtime releases it when the
@@ -156,6 +178,7 @@ void mc_release(id obj) {
 static int diagOn;
 static int gcOn;  // -Dmcms.metal.gpuCount (GPU counting, measurement only: see 'GPU counting' below)
 static char gcLabel[256];  // the next pipeline's name while counting (mc_gpucount_label), used once
+static os_unfair_lock gcLock = OS_UNFAIR_LOCK_INIT;
 static double diagMs, diagWallMinusHost;
 static uint64_t diagBigBytes, diagPreBytes, diagMainBytes;
 static long diagSubmit;
@@ -366,32 +389,53 @@ void *mc_buffer_contents(id<MTLBuffer> buffer) { return buffer.contents; }
 uint64_t mc_buffer_gpu_address(id<MTLBuffer> buffer) { return buffer.gpuAddress; }
 
 id<MTLTexture> mc_texture_new(Ctx *ctx, int format, int width, int height, int layers, int mips, int usage, int cube) {
+	if (!ctx || width < 1 || height < 1 || layers < 1 || mips < 1) return nil;
 	@autoreleasepool {
-		MTLTextureDescriptor *d = [[MTLTextureDescriptor new] autorelease];
-		d.textureType = cube ? MTLTextureTypeCube : MTLTextureType2D;
-		d.pixelFormat = (MTLPixelFormat) format;
-		d.width = width;
-		d.height = height;
-		d.mipmapLevelCount = mips;
-		d.usage = (MTLTextureUsage) usage;
-		d.storageMode = MTLStorageModePrivate;
-		(void) layers;  // cubes carry their 6 faces implicitly; arrays aren't used by the game yet
-		return tkResource([ctx->device newTextureWithDescriptor:d], TK_TEXTURE);
+		@try {
+			MTLTextureDescriptor *d = [[MTLTextureDescriptor new] autorelease];
+			d.textureType = cube ? MTLTextureTypeCube : layers > 1 ? MTLTextureType2DArray : MTLTextureType2D;
+			d.pixelFormat = (MTLPixelFormat) format;
+			d.width = width;
+			d.height = height;
+			if (!cube && layers > 1) d.arrayLength = layers;
+			d.mipmapLevelCount = mips;
+			d.usage = (MTLTextureUsage) usage;
+			d.storageMode = MTLStorageModePrivate;
+			return tkResource([ctx->device newTextureWithDescriptor:d], TK_TEXTURE);
+		} @catch (NSException *ex) {
+			return nil;
+		}
 	}
 }
 
 id<MTLTexture> mc_texture_view(id<MTLTexture> texture, int baseMip, int mips) {
-	NSUInteger slices = texture.textureType == MTLTextureTypeCube ? 6 : 1;
-	return tk([texture newTextureViewWithPixelFormat:texture.pixelFormat textureType:texture.textureType
-		levels:NSMakeRange(baseMip, mips) slices:NSMakeRange(0, slices)], TK_VIEW, 0);
+	if (!texture || baseMip < 0 || mips < 1) return nil;
+	@try {
+		NSUInteger slices = texture.textureType == MTLTextureTypeCube ? 6 : texture.arrayLength;
+		return tk([texture newTextureViewWithPixelFormat:texture.pixelFormat textureType:texture.textureType
+			levels:NSMakeRange(baseMip, mips) slices:NSMakeRange(0, slices)], TK_VIEW, 0);
+	} @catch (NSException *ex) {
+		return nil;
+	}
 }
 
 id<MTLTexture> mc_texture_buffer(Ctx *ctx, id<MTLBuffer> buffer, int format, uint64_t offset, uint64_t length, int texelSize) {
+	if (!ctx || !buffer || texelSize < 1) return nil;
 	@autoreleasepool {
-		NSUInteger texels = length / texelSize;
-		MTLTextureDescriptor *d = [MTLTextureDescriptor textureBufferDescriptorWithPixelFormat:(MTLPixelFormat) format
-			width:texels resourceOptions:MTLResourceStorageModeShared usage:MTLTextureUsageShaderRead];
-		return tk([buffer newTextureWithDescriptor:d offset:offset bytesPerRow:texels * texelSize], TK_TEXEL, 0);
+		@try {
+			NSUInteger texels = length / texelSize;
+			if (texels == 0) return nil;
+			NSUInteger rawRow = texels * (NSUInteger) texelSize;
+			if (offset > buffer.length || rawRow > buffer.length - offset) return nil;
+			NSUInteger align = [ctx->device minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat) format];
+			NSUInteger aligned = align > 1 ? ((rawRow + align - 1) / align * align) : rawRow;
+			NSUInteger row = (aligned <= buffer.length - offset) ? aligned : rawRow;
+			MTLTextureDescriptor *d = [MTLTextureDescriptor textureBufferDescriptorWithPixelFormat:(MTLPixelFormat) format
+				width:texels resourceOptions:MTLResourceStorageModeShared usage:MTLTextureUsageShaderRead];
+			return tk([buffer newTextureWithDescriptor:d offset:offset bytesPerRow:row], TK_TEXEL, 0);
+		} @catch (NSException *ex) {
+			return nil;
+		}
 	}
 }
 
@@ -401,34 +445,58 @@ uint64_t mc_texture_buffer_alignment(Ctx *ctx, int format) {
 
 // M4: a buffer only the GPU reads and writes (a pack's storage buffers, compute's shared-memory buffer).
 id<MTLBuffer> mc_buffer_new_private(Ctx *ctx, uint64_t size) {
-	return tkResource([ctx->device newBufferWithLength:size options:MTLResourceStorageModePrivate], TK_PRIVATE);
+	if (!ctx || size == 0) return nil;
+	@try {
+		return tkResource([ctx->device newBufferWithLength:size options:MTLResourceStorageModePrivate], TK_PRIVATE);
+	} @catch (NSException *ex) {
+		return nil;
+	}
 }
 
 id<MTLSamplerState> mc_sampler_new(Ctx *ctx, int addressU, int addressV, int minFilter, int magFilter, int mipFilter, int anisotropy, float maxLod) {
+	if (!ctx) return nil;
 	@autoreleasepool {
-		MTLSamplerDescriptor *d = [[MTLSamplerDescriptor new] autorelease];
-		d.sAddressMode = (MTLSamplerAddressMode) addressU;
-		d.tAddressMode = (MTLSamplerAddressMode) addressV;
-		d.minFilter = (MTLSamplerMinMagFilter) minFilter;
-		d.magFilter = (MTLSamplerMinMagFilter) magFilter;
-		d.mipFilter = (MTLSamplerMipFilter) mipFilter;
-		d.maxAnisotropy = anisotropy;
-		d.lodMaxClamp = maxLod;
-		return [ctx->device newSamplerStateWithDescriptor:d];
+		@try {
+			MTLSamplerDescriptor *d = [[MTLSamplerDescriptor new] autorelease];
+			d.sAddressMode = (MTLSamplerAddressMode) addressU;
+			d.tAddressMode = (MTLSamplerAddressMode) addressV;
+			d.minFilter = (MTLSamplerMinMagFilter) minFilter;
+			d.magFilter = (MTLSamplerMinMagFilter) magFilter;
+			d.mipFilter = (MTLSamplerMipFilter) mipFilter;
+			d.maxAnisotropy = anisotropy < 1 ? 1 : anisotropy > 16 ? 16 : anisotropy;
+			d.lodMaxClamp = maxLod;
+			return [ctx->device newSamplerStateWithDescriptor:d];
+		} @catch (NSException *ex) {
+			return nil;
+		}
 	}
 }
 
 // ---- pipelines ----
 
 id<MTLLibrary> mc_library_new(Ctx *ctx, const char *source, char *err, int errCap) {
+	if (!ctx || !source) {
+		if (err && errCap > 0) strlcpy(err, "invalid library arguments", errCap);
+		return nil;
+	}
 	@autoreleasepool {
-		MTLCompileOptions *o = [[MTLCompileOptions new] autorelease];
-		o.languageVersion = MTLLanguageVersion3_0;
-		o.mathMode = MTLMathModeFast;
-		NSError *e = nil;
-		id<MTLLibrary> lib = [ctx->device newLibraryWithSource:[NSString stringWithUTF8String:source] options:o error:&e];
-		if (!lib) copyError(e, err, errCap);
-		return tk(lib, TK_LIBRARY, 0);
+		@try {
+			NSString *src = [NSString stringWithUTF8String:source];
+			if (!src) {
+				if (err && errCap > 0) strlcpy(err, "invalid UTF-8 shader source", errCap);
+				return nil;
+			}
+			MTLCompileOptions *o = [[MTLCompileOptions new] autorelease];
+			o.languageVersion = MTLLanguageVersion3_0;
+			o.mathMode = MTLMathModeFast;
+			NSError *e = nil;
+			id<MTLLibrary> lib = [ctx->device newLibraryWithSource:src options:o error:&e];
+			if (!lib) copyError(e, err, errCap);
+			return tk(lib, TK_LIBRARY, 0);
+		} @catch (NSException *ex) {
+			if (err && errCap > 0) strlcpy(err, ex.reason ? ex.reason.UTF8String : "Metal exception", errCap);
+			return nil;
+		}
 	}
 }
 
@@ -436,28 +504,44 @@ id<MTLLibrary> mc_library_new(Ctx *ctx, const char *source, char *err, int errCa
 // the render pipelines' options; *maxThreads gets the most threads one group of this pipeline may have, which the caller checks
 // against the shader's local size.
 id<MTLComputePipelineState> mc_compute_pipeline_new(Ctx *ctx, const char *source, const char *entry, char *err, int errCap, int *maxThreads) {
+	if (maxThreads) *maxThreads = 0;
+	if (!ctx || !source || !entry) {
+		if (err && errCap > 0) strlcpy(err, "invalid compute pipeline arguments", errCap);
+		return nil;
+	}
 	@autoreleasepool {
-		MTLCompileOptions *o = [[MTLCompileOptions new] autorelease];
-		o.languageVersion = MTLLanguageVersion3_0;
-		o.mathMode = MTLMathModeFast;
-		NSError *e = nil;
-		id<MTLLibrary> lib = [[ctx->device newLibraryWithSource:[NSString stringWithUTF8String:source] options:o error:&e] autorelease];
-		if (!lib) {
-			copyError(e, err, errCap);
+		@try {
+			NSString *src = [NSString stringWithUTF8String:source];
+			NSString *entryName = [NSString stringWithUTF8String:entry];
+			if (!src || !entryName) {
+				if (err && errCap > 0) strlcpy(err, "invalid UTF-8 compute source or entry", errCap);
+				return nil;
+			}
+			MTLCompileOptions *o = [[MTLCompileOptions new] autorelease];
+			o.languageVersion = MTLLanguageVersion3_0;
+			o.mathMode = MTLMathModeFast;
+			NSError *e = nil;
+			id<MTLLibrary> lib = [[ctx->device newLibraryWithSource:src options:o error:&e] autorelease];
+			if (!lib) {
+				copyError(e, err, errCap);
+				return nil;
+			}
+			id<MTLFunction> fn = [[lib newFunctionWithName:entryName] autorelease];
+			if (!fn) {
+				if (err && errCap > 0) strlcpy(err, "the translated source has no kernel of that name", errCap);
+				return nil;
+			}
+			id<MTLComputePipelineState> pso = tk([ctx->device newComputePipelineStateWithFunction:fn error:&e], TK_PIPELINE, 0);
+			if (!pso) {
+				copyError(e, err, errCap);
+				return nil;
+			}
+			if (maxThreads) *maxThreads = (int) pso.maxTotalThreadsPerThreadgroup;
+			return pso;
+		} @catch (NSException *ex) {
+			if (err && errCap > 0) strlcpy(err, ex.reason ? ex.reason.UTF8String : "Metal exception", errCap);
 			return nil;
 		}
-		id<MTLFunction> fn = [[lib newFunctionWithName:[NSString stringWithUTF8String:entry]] autorelease];
-		if (!fn) {
-			strlcpy(err, "the translated source has no kernel of that name", errCap);
-			return nil;
-		}
-		id<MTLComputePipelineState> pso = tk([ctx->device newComputePipelineStateWithFunction:fn error:&e], TK_PIPELINE, 0);
-		if (!pso) {
-			copyError(e, err, errCap);
-			return nil;
-		}
-		*maxThreads = (int) pso.maxTotalThreadsPerThreadgroup;
-		return pso;
 	}
 }
 
@@ -471,52 +555,65 @@ id<MTLComputePipelineState> mc_compute_pipeline_new(Ctx *ctx, const char *source
  */
 id<MTLRenderPipelineState> mc_pipeline_new(Ctx *ctx, id<MTLLibrary> vlib, const char *vname, id<MTLLibrary> flib, const char *fname,
 	const int *desc, char *err, int errCap) {
+	if (!ctx || !vlib || !vname || !flib || !fname || !desc) {
+		if (err && errCap > 0) strlcpy(err, "invalid pipeline arguments", errCap);
+		return nil;
+	}
 	@autoreleasepool {
-		MTLRenderPipelineDescriptor *pd = [[MTLRenderPipelineDescriptor new] autorelease];
-		pd.vertexFunction = [[vlib newFunctionWithName:[NSString stringWithUTF8String:vname]] autorelease];
-		pd.fragmentFunction = [[flib newFunctionWithName:[NSString stringWithUTF8String:fname]] autorelease];
-		if (gcOn) {  // -Dmcms.metal.gpuCount: the game's pipeline name (mc_gpucount_label) names the per-pipeline counts
-			pd.label = gcLabel[0] ? [NSString stringWithUTF8String:gcLabel] : [NSString stringWithFormat:@"%s|%s", vname, fname];
-			gcLabel[0] = 0;
-		}
-		MTLVertexDescriptor *vd = [MTLVertexDescriptor vertexDescriptor];
-		int i = 0;
-		int buffers = desc[i++];
-		for (int b = 0; b < buffers; b++, i += 3) {
-			MTLVertexBufferLayoutDescriptor *l = vd.layouts[desc[i]];
-			l.stride = desc[i + 1];
-			if (desc[i + 2] > 0) {
-				l.stepFunction = MTLVertexStepFunctionPerInstance;
-				l.stepRate = desc[i + 2];
+		@try {
+			MTLRenderPipelineDescriptor *pd = [[MTLRenderPipelineDescriptor new] autorelease];
+			pd.vertexFunction = [[vlib newFunctionWithName:[NSString stringWithUTF8String:vname]] autorelease];
+			pd.fragmentFunction = [[flib newFunctionWithName:[NSString stringWithUTF8String:fname]] autorelease];
+			if (gcOn) {  // -Dmcms.metal.gpuCount: the game's pipeline name (mc_gpucount_label) names the per-pipeline counts
+				char labelCopy[256];
+				os_unfair_lock_lock(&gcLock);
+				strlcpy(labelCopy, gcLabel, sizeof labelCopy);
+				gcLabel[0] = 0;
+				os_unfair_lock_unlock(&gcLock);
+				pd.label = labelCopy[0] ? [NSString stringWithUTF8String:labelCopy] : [NSString stringWithFormat:@"%s|%s", vname, fname];
 			}
+			MTLVertexDescriptor *vd = [MTLVertexDescriptor vertexDescriptor];
+			int i = 0;
+			int buffers = desc[i++];
+			for (int b = 0; b < buffers; b++, i += 3) {
+				MTLVertexBufferLayoutDescriptor *l = vd.layouts[desc[i]];
+				l.stride = desc[i + 1];
+				if (desc[i + 2] > 0) {
+					l.stepFunction = MTLVertexStepFunctionPerInstance;
+					l.stepRate = desc[i + 2];
+				}
+			}
+			int attributes = desc[i++];
+			for (int a = 0; a < attributes; a++, i += 4) {
+				MTLVertexAttributeDescriptor *ad = vd.attributes[desc[i]];
+				ad.bufferIndex = desc[i + 1];
+				ad.offset = desc[i + 2];
+				ad.format = (MTLVertexFormat) desc[i + 3];
+			}
+			if (buffers > 0) pd.vertexDescriptor = vd;
+			int colors = desc[i++];
+			for (int c = 0; c < colors; c++, i += 9) {
+				MTLRenderPipelineColorAttachmentDescriptor *cd = pd.colorAttachments[c];
+				cd.pixelFormat = (MTLPixelFormat) desc[i];
+				cd.writeMask = (MTLColorWriteMask) desc[i + 1];
+				cd.blendingEnabled = desc[i + 2] != 0;
+				cd.sourceRGBBlendFactor = (MTLBlendFactor) desc[i + 3];
+				cd.destinationRGBBlendFactor = (MTLBlendFactor) desc[i + 4];
+				cd.rgbBlendOperation = (MTLBlendOperation) desc[i + 5];
+				cd.sourceAlphaBlendFactor = (MTLBlendFactor) desc[i + 6];
+				cd.destinationAlphaBlendFactor = (MTLBlendFactor) desc[i + 7];
+				cd.alphaBlendOperation = (MTLBlendOperation) desc[i + 8];
+			}
+			pd.depthAttachmentPixelFormat = (MTLPixelFormat) desc[i++];
+			pd.inputPrimitiveTopology = (MTLPrimitiveTopologyClass) desc[i++];
+			NSError *e = nil;
+			id<MTLRenderPipelineState> pso = tk([ctx->device newRenderPipelineStateWithDescriptor:pd error:&e], TK_PIPELINE, 0);
+			if (!pso) copyError(e, err, errCap);
+			return pso;
+		} @catch (NSException *ex) {
+			if (err && errCap > 0) strlcpy(err, ex.reason ? ex.reason.UTF8String : "Metal exception", errCap);
+			return nil;
 		}
-		int attributes = desc[i++];
-		for (int a = 0; a < attributes; a++, i += 4) {
-			MTLVertexAttributeDescriptor *ad = vd.attributes[desc[i]];
-			ad.bufferIndex = desc[i + 1];
-			ad.offset = desc[i + 2];
-			ad.format = (MTLVertexFormat) desc[i + 3];
-		}
-		if (buffers > 0) pd.vertexDescriptor = vd;
-		int colors = desc[i++];
-		for (int c = 0; c < colors; c++, i += 9) {
-			MTLRenderPipelineColorAttachmentDescriptor *cd = pd.colorAttachments[c];
-			cd.pixelFormat = (MTLPixelFormat) desc[i];
-			cd.writeMask = (MTLColorWriteMask) desc[i + 1];
-			cd.blendingEnabled = desc[i + 2] != 0;
-			cd.sourceRGBBlendFactor = (MTLBlendFactor) desc[i + 3];
-			cd.destinationRGBBlendFactor = (MTLBlendFactor) desc[i + 4];
-			cd.rgbBlendOperation = (MTLBlendOperation) desc[i + 5];
-			cd.sourceAlphaBlendFactor = (MTLBlendFactor) desc[i + 6];
-			cd.destinationAlphaBlendFactor = (MTLBlendFactor) desc[i + 7];
-			cd.alphaBlendOperation = (MTLBlendOperation) desc[i + 8];
-		}
-		pd.depthAttachmentPixelFormat = (MTLPixelFormat) desc[i++];
-		pd.inputPrimitiveTopology = (MTLPrimitiveTopologyClass) desc[i++];
-		NSError *e = nil;
-		id<MTLRenderPipelineState> pso = tk([ctx->device newRenderPipelineStateWithDescriptor:pd error:&e], TK_PIPELINE, 0);
-		if (!pso) copyError(e, err, errCap);
-		return pso;
 	}
 }
 
@@ -610,7 +707,6 @@ static void rpLogTex(const char *what, int i, id<MTLTexture> t, const char *acti
 static FILE *gcOut;
 static long gcFrame, gcEvery = 1;
 static int gcGroups = 1;  // a new visibility slot at each debug group push/pop (-Dmcms.metal.gpuCount.groups=false: one per encoder)
-static os_unfair_lock gcLock = OS_UNFAIR_LOCK_INIT;
 #define GC_SLOTS 2048
 
 typedef struct { id pso; long draws; double prims; } GcPso;
@@ -873,7 +969,11 @@ static void gcAfterEnd(id<MTLRenderCommandEncoder> render) {
 	[b endEncoding];
 }
 
-void mc_gpucount_label(const char *name) { snprintf(gcLabel, sizeof gcLabel, "%s", name ? name : ""); }
+void mc_gpucount_label(const char *name) {
+	os_unfair_lock_lock(&gcLock);
+	snprintf(gcLabel, sizeof gcLabel, "%s", name ? name : "");
+	os_unfair_lock_unlock(&gcLock);
+}
 
 void mc_gpucount_enable(const char *path, int every, int groups) {
 	if (gcOn) return;
@@ -1224,6 +1324,13 @@ int mc_profile_begin(Enc *enc, int maxEncoders) {
 
 // Detaches the profiled submit's samples; call just before its commit, read them with mc_profile_read after it completes.
 id<MTLCounterSampleBuffer> mc_profile_end(Enc *enc, int *count) {
+	int n = enc->sampleCount / 4;
+	for (int g = 0; g < n && g < 512; g++) {
+		if (enc->sampleEnc[g]) {
+			[enc->sampleEnc[g] release];
+			enc->sampleEnc[g] = nil;
+		}
+	}
 	id<MTLCounterSampleBuffer> s = enc->samples;
 	*count = enc->sampleCount;
 	enc->samples = nil;
@@ -1232,18 +1339,24 @@ id<MTLCounterSampleBuffer> mc_profile_end(Enc *enc, int *count) {
 
 // out: per encoder {vertex start, vertex end, fragment start, fragment end} in µs from the first sample (-1 = stage didn't run).
 void mc_profile_read(Ctx *ctx, id<MTLCounterSampleBuffer> s, int count, double *out) {
-	MTLTimestamp cpu1, gpu1;
+	if (!s || !out || count <= 0) { [s release]; return; }
+	MTLTimestamp cpu1 = 0, gpu1 = 0;
 	[ctx->device sampleTimestamps:&cpu1 gpuTimestamp:&gpu1];
 	// Timestamps are in GPU ticks; the CPU side of the calibration pair is in nanoseconds.
-	double usPerTick = (double) (cpu1 - profileCpu0) / (double) (gpu1 - profileGpu0) / 1000.0;
+	double usPerTick = gpu1 > profileGpu0 ? (double) (cpu1 - profileCpu0) / (double) (gpu1 - profileGpu0) / 1000.0 : 0.0;
 	@autoreleasepool {
-		const MTLCounterResultTimestamp *ts = [s resolveCounterRange:NSMakeRange(0, count)].bytes;
-		uint64_t origin = UINT64_MAX;
-		for (int i = 0; i < count; i++) {
-			if (ts[i].timestamp != MTLCounterErrorValue && ts[i].timestamp != 0 && ts[i].timestamp < origin) origin = ts[i].timestamp;
-		}
-		for (int i = 0; i < count; i++) {
-			out[i] = ts[i].timestamp == MTLCounterErrorValue || ts[i].timestamp == 0 ? -1 : (double) (ts[i].timestamp - origin) * usPerTick;
+		NSData *data = [s resolveCounterRange:NSMakeRange(0, count)];
+		const MTLCounterResultTimestamp *ts = data ? data.bytes : NULL;
+		if (!ts || data.length < (NSUInteger) count * sizeof(MTLCounterResultTimestamp) || usPerTick <= 0.0) {
+			for (int i = 0; i < count; i++) out[i] = -1;
+		} else {
+			uint64_t origin = UINT64_MAX;
+			for (int i = 0; i < count; i++) {
+				if (ts[i].timestamp != MTLCounterErrorValue && ts[i].timestamp != 0 && ts[i].timestamp < origin) origin = ts[i].timestamp;
+			}
+			for (int i = 0; i < count; i++) {
+				out[i] = ts[i].timestamp == MTLCounterErrorValue || ts[i].timestamp == 0 ? -1 : (double) (ts[i].timestamp - origin) * usPerTick;
+			}
 		}
 	}
 	[s release];
@@ -1252,13 +1365,19 @@ void mc_profile_read(Ctx *ctx, id<MTLCounterSampleBuffer> s, int count, double *
 // The encoder log (-Dmcms.own.int.encLog): samples in µs since the first profiled submit's calibration (-1 = didn't run), so encoders of
 // different submits compare; releases s.
 void mc_profile_read_abs(Ctx *ctx, id<MTLCounterSampleBuffer> s, int count, double *out) {
-	MTLTimestamp cpu1, gpu1;
+	if (!s || !out || count <= 0) { [s release]; return; }
+	MTLTimestamp cpu1 = 0, gpu1 = 0;
 	[ctx->device sampleTimestamps:&cpu1 gpuTimestamp:&gpu1];
-	double usPerTick = (double) (cpu1 - profileCpu0) / (double) (gpu1 - profileGpu0) / 1000.0;
+	double usPerTick = gpu1 > profileGpu0 ? (double) (cpu1 - profileCpu0) / (double) (gpu1 - profileGpu0) / 1000.0 : 0.0;
 	@autoreleasepool {
-		const MTLCounterResultTimestamp *ts = [s resolveCounterRange:NSMakeRange(0, count)].bytes;
-		for (int i = 0; i < count; i++) {
-			out[i] = ts[i].timestamp == MTLCounterErrorValue || ts[i].timestamp == 0 ? -1 : (double) (int64_t) (ts[i].timestamp - profileGpu0) * usPerTick;
+		NSData *data = [s resolveCounterRange:NSMakeRange(0, count)];
+		const MTLCounterResultTimestamp *ts = data ? data.bytes : NULL;
+		if (!ts || data.length < (NSUInteger) count * sizeof(MTLCounterResultTimestamp) || usPerTick <= 0.0) {
+			for (int i = 0; i < count; i++) out[i] = -1;
+		} else {
+			for (int i = 0; i < count; i++) {
+				out[i] = ts[i].timestamp == MTLCounterErrorValue || ts[i].timestamp == 0 ? -1 : (double) (int64_t) (ts[i].timestamp - profileGpu0) * usPerTick;
+			}
 		}
 	}
 	[s release];
@@ -1427,18 +1546,23 @@ static void foldDepthClear(Enc *enc, float depthValue, int width, int height) {
 			}
 			pd.depthAttachmentPixelFormat = enc->depth.pixelFormat;
 			pso = [ctx->device newRenderPipelineStateWithDescriptor:pd error:nil];
+			if (!pso) return;
 			ctx->clearPipelines[(id) key] = pso;
 			[pso release];
 		}
 		if (cpuPass) foldKeep(enc, pso);
 		}
+		if (!pso) return;
 		struct { float color[4]; float depth; float pad[3]; } c = {{0}, depthValue, {0}};
 		[enc->render setRenderPipelineState:pso];
 		[enc->render setDepthStencilState:ctx->depthWrite];
 		[enc->render setCullMode:MTLCullModeNone];
 		[enc->render setTriangleFillMode:MTLTriangleFillModeFill];
 		[enc->render setDepthBias:0 slopeScale:0 clamp:0];
-		[enc->render setScissorRect:(MTLScissorRect) {0, 0, width, height}];
+		int sw = width > 0 ? width : 0, sh = height > 0 ? height : 0;
+		if (enc->width > 0 && sw > enc->width) sw = enc->width;
+		if (enc->height > 0 && sh > enc->height) sh = enc->height;
+		[enc->render setScissorRect:(MTLScissorRect) {0, 0, (NSUInteger) sw, (NSUInteger) sh}];
 		[enc->render setVertexBytes:&c length:sizeof c atIndex:0];
 		[enc->render drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
 	}
@@ -1584,21 +1708,26 @@ static MTLRenderPassDescriptor *keptPass(Enc *enc, int count, id<MTLTexture> con
  */
 int mc_render_begin(Enc *enc, int count, id<MTLTexture> const *colors, const float *clears,
 	id<MTLTexture> depth, int clearDepth, float depthValue, int width, int height) {
+	if (count < 0) count = 0;
+	if (count > MAX_COLORS) count = MAX_COLORS;
+	if (count > 0 && !colors) count = 0;
 	endBlit(enc);
 	if (sameTargets(enc, count, colors, clears, depth)) {
-		if (!clearDepth) return 1;
+		if (!clearDepth || !depth) return 1;
 		foldDepthClear(enc, depthValue, width, height);
 		return 2;
 	}
 	int endedOpen = enc->render != nil;
 	endRender(enc);
 	enc->colorCount = count;
-	memcpy(enc->colors, colors, sizeof(id) * count);
+	if (count > 0) memcpy(enc->colors, colors, sizeof(id) * (size_t) count);
 	enc->depth = depth;
 	@autoreleasepool {
 		MTLRenderPassDescriptor *rp = cpuPass ? keptPass(enc, count, colors, depth) : [MTLRenderPassDescriptor renderPassDescriptor];  // opt-in
+		int hasColor = 0;
 		for (int i = 0; i < count; i++) {
 			if (!colors[i]) continue;
+			hasColor = 1;
 			MTLRenderPassColorAttachmentDescriptor *c = rp.colorAttachments[i];
 			c.texture = colors[i];
 			const float *cl = clears + i * 5;
@@ -1616,13 +1745,13 @@ int mc_render_begin(Enc *enc, int count, id<MTLTexture> const *colors, const flo
 			rp.depthAttachment.clearDepth = clearDepth ? depthValue : 1.0;
 			rp.depthAttachment.storeAction = MTLStoreActionUnknown;
 		}
-		if (count == 0 && !depth) {
-			rp.renderTargetWidth = width;
-			rp.renderTargetHeight = height;
+		if (!hasColor && !depth) {
+			rp.renderTargetWidth = width > 0 ? (NSUInteger) width : 1;
+			rp.renderTargetHeight = height > 0 ? (NSUInteger) height : 1;
 			rp.defaultRasterSampleCount = 1;
 		}
-		enc->width = width;
-		enc->height = height;
+		enc->width = width > 0 ? width : 1;
+		enc->height = height > 0 ? height : 1;
 		openRender(enc, rp);
 		if (cpuPass && enc->samples) enc->cpuPassSampled = 1;
 	}
@@ -1794,6 +1923,7 @@ void mc_render_resume(Enc *enc, id<MTLComputeCommandEncoder> compute) {
 void mc_r_pipeline(Enc *enc, id<MTLRenderPipelineState> pso, id<MTLDepthStencilState> depth, int cull, int wireframe,
 	float biasConstant, float biasSlope, int primitive) {
 	id<MTLRenderCommandEncoder> r = enc->render;
+	if (!r || !pso) return;
 	[r setRenderPipelineState:pso];
 	if (depth) [r setDepthStencilState:depth];
 	if (depth && depth.label.length) enc->tlDepthWritten = 1;  // (a writing depth state: mc_depth_state_new labels it)
@@ -1823,6 +1953,7 @@ void mc_r_vertex_buffer(Enc *enc, int index, id<MTLBuffer> buffer, uint64_t offs
 }
 
 void mc_r_bytes(Enc *enc, int index, const void *bytes, int length) {
+	if (!enc->render || !bytes || length <= 0 || length > 4096) return;
 	// A uniform block's std140 size isn't always a multiple of 16, but the translated MSL struct is (its alignment): bind the
 	// struct's size, zero-padded. Every member keeps its bytes; only the struct's tail padding was outside (Metal API validation:
 	// "has space for N bytes, but argument has a length(N+4..8)").
@@ -1857,8 +1988,23 @@ void mc_r_texture_slots(Enc *enc, int index, id<MTLTexture> texture, id<MTLSampl
 	}
 }
 
+static MTLScissorRect clampScissor(int x, int y, int w, int h, int maxW, int maxH) {
+	int64_t mw = maxW > 0 ? maxW : 0;
+	int64_t mh = maxH > 0 ? maxH : 0;
+	int64_t x0 = x < 0 ? 0 : (x > mw ? mw : x);
+	int64_t y0 = y < 0 ? 0 : (y > mh ? mh : y);
+	int64_t x1 = (int64_t) x + (int64_t) w;
+	int64_t y1 = (int64_t) y + (int64_t) h;
+	if (x1 < x0) x1 = x0;
+	if (y1 < y0) y1 = y0;
+	if (x1 > mw) x1 = mw;
+	if (y1 > mh) y1 = mh;
+	return (MTLScissorRect) {(NSUInteger) x0, (NSUInteger) y0, (NSUInteger) (x1 - x0), (NSUInteger) (y1 - y0)};
+}
+
 void mc_r_scissor(Enc *enc, int x, int y, int w, int h) {
-	[enc->render setScissorRect:(MTLScissorRect) {x, y, w, h}];
+	if (!enc->render) return;
+	[enc->render setScissorRect:clampScissor(x, y, w, h, enc->width, enc->height)];
 }
 
 // A buffer the vertex stage reaches through a GPU address stored in another buffer (bindless) must be made resident.
@@ -1872,27 +2018,31 @@ void mc_r_index(Enc *enc, id<MTLBuffer> buffer, int intIndices) {
 }
 
 static void drawFan(Enc *enc, int firstVertex, int vertexCount, int instances, int firstInstance) {
-	if (vertexCount < 3) return;
-	[enc->render drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:(vertexCount - 2) * 3 indexType:MTLIndexTypeUInt32
-		indexBuffer:enc->ctx->fanIndices indexBufferOffset:0 instanceCount:instances baseVertex:firstVertex baseInstance:firstInstance];
+	if (vertexCount < 3 || instances <= 0 || !enc->render) return;
+	if (vertexCount > FAN_MAX_VERTICES) vertexCount = FAN_MAX_VERTICES;
+	[enc->render drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:(NSUInteger) (vertexCount - 2) * 3 indexType:MTLIndexTypeUInt32
+		indexBuffer:enc->ctx->fanIndices indexBufferOffset:0 instanceCount:(NSUInteger) instances baseVertex:firstVertex baseInstance:(NSUInteger) firstInstance];
 }
 
 void mc_r_draw(Enc *enc, int vertexCount, int instances, int firstVertex, int firstInstance) {
+	if (vertexCount <= 0 || instances <= 0 || !enc->render) return;
 	if (enc->primitive == FAN_PRIMITIVE) {
 		drawFan(enc, firstVertex, vertexCount, instances, firstInstance);
 		return;
 	}
-	[enc->render drawPrimitives:enc->primitive vertexStart:firstVertex vertexCount:vertexCount instanceCount:instances baseInstance:firstInstance];
+	[enc->render drawPrimitives:enc->primitive vertexStart:(NSUInteger) firstVertex vertexCount:(NSUInteger) vertexCount instanceCount:(NSUInteger) instances baseInstance:(NSUInteger) firstInstance];
 }
 
 void mc_r_draw_indexed(Enc *enc, int indexCount, int instances, int firstIndex, int baseVertex, int firstInstance) {
+	if (indexCount <= 0 || instances <= 0 || !enc->render) return;
 	// Indexed fans only come with the game's sequential index buffer, so index i is vertex i.
 	if (enc->primitive == FAN_PRIMITIVE) {
 		drawFan(enc, baseVertex + firstIndex, indexCount, instances, firstInstance);
 		return;
 	}
-	[enc->render drawIndexedPrimitives:enc->primitive indexCount:indexCount indexType:enc->indexType indexBuffer:enc->indexBuffer
-		indexBufferOffset:(NSUInteger) firstIndex * enc->indexSize instanceCount:instances baseVertex:baseVertex baseInstance:firstInstance];
+	if (!enc->indexBuffer) return;
+	[enc->render drawIndexedPrimitives:enc->primitive indexCount:(NSUInteger) indexCount indexType:enc->indexType indexBuffer:enc->indexBuffer
+		indexBufferOffset:(NSUInteger) firstIndex * enc->indexSize instanceCount:(NSUInteger) instances baseVertex:baseVertex baseInstance:(NSUInteger) firstInstance];
 }
 
 // params: drawCount × {firstIndex, indexCount, vertexOffset} (VkMultiDrawIndexedInfoEXT layout).
@@ -1949,6 +2099,7 @@ void mc_r_debug_pop(Enc *enc) { [enc->render popDebugGroup]; }
 // depth < 0 leaves the depth texture untouched.
 void mc_clear_rect(Enc *enc, id<MTLTexture> color, id<MTLTexture> depthTex, float r, float g, float b, float a, float depth,
 	int x, int y, int w, int h, int mip) {
+	if (!color && !depthTex) return;
 	endBlit(enc);
 	endRender(enc);
 	Ctx *ctx = enc->ctx;
@@ -1962,9 +2113,17 @@ void mc_clear_rect(Enc *enc, id<MTLTexture> color, id<MTLTexture> depthTex, floa
 			if (color) pd.colorAttachments[0].pixelFormat = color.pixelFormat;
 			if (depthTex) pd.depthAttachmentPixelFormat = depthTex.pixelFormat;
 			pso = [ctx->device newRenderPipelineStateWithDescriptor:pd error:nil];
+			if (!pso) return;
 			ctx->clearPipelines[key] = pso;
 			[pso release];
 		}
+		id<MTLTexture> ref = color ? color : depthTex;
+		int maxW = (int) (ref.width >> (mip > 0 ? mip : 0));
+		int maxH = (int) (ref.height >> (mip > 0 ? mip : 0));
+		if (maxW < 1) maxW = 1;
+		if (maxH < 1) maxH = 1;
+		MTLScissorRect sc = clampScissor(x, y, w, h, maxW, maxH);
+		if (sc.width == 0 || sc.height == 0) return;
 		MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
 		if (color) {
 			rp.colorAttachments[0].texture = color;
@@ -1982,7 +2141,7 @@ void mc_clear_rect(Enc *enc, id<MTLTexture> color, id<MTLTexture> depthTex, floa
 		struct { float color[4]; float depth; float pad[3]; } c = {{r, g, b, a}, depth < 0 ? 0 : depth, {0}};
 		[re setRenderPipelineState:pso];
 		[re setDepthStencilState:depth >= 0 ? ctx->depthWrite : ctx->depthKeep];
-		[re setScissorRect:(MTLScissorRect) {x, y, w, h}];
+		[re setScissorRect:sc];
 		[re setVertexBytes:&c length:sizeof c atIndex:0];
 		[re setFragmentBytes:&c length:sizeof c atIndex:0];
 		[re drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
@@ -2051,8 +2210,24 @@ int mc_layer_colorspace_report(NSView *view, CAMetalLayer *layer, char *out, int
 // link on the display that shows the game's window (followGameDisplay, below; presented handlers report no presentedTime on
 // some displays, the rig's among them). The lead is the measured encode-to-GPU-done time of presented frames plus the
 // caller's margin for the compositor's latch.
-static _Atomic double nextRefresh, refreshPeriod, gpuLatency;
+static os_unfair_lock refreshLock = OS_UNFAIR_LOCK_INIT;
+static double nextRefresh, refreshPeriod;
+static _Atomic double gpuLatency;
 static double pacedFor, lastPace, frameInterval;
+
+static void readRefresh(double *outAnchor, double *outPeriod) {
+	os_unfair_lock_lock(&refreshLock);
+	*outAnchor = nextRefresh;
+	*outPeriod = refreshPeriod;
+	os_unfair_lock_unlock(&refreshLock);
+}
+
+static void recordGpuLatency(double sample) {
+	if (sample < 0.0) sample = 0.0;
+	if (sample > 0.1) sample = 0.1;  // clamp stalls (world load, sleep) so the pacer never freezes
+	double prev = atomic_load(&gpuLatency);
+	atomic_store(&gpuLatency, prev + (sample - prev) * 0.1);
+}
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations" // CVDisplayLink: its replacement needs a run loop to deliver on
@@ -2063,8 +2238,12 @@ static CVReturn onRefresh(CVDisplayLinkRef link, const CVTimeStamp *now, const C
 		mach_timebase_info(&tb);
 		hostSeconds = (double) tb.numer / tb.denom / 1e9;
 	}
-	nextRefresh = next->hostTime * hostSeconds; // host time is CACurrentMediaTime's clock
-	refreshPeriod = next->videoTimeScale ? (double) next->videoRefreshPeriod / next->videoTimeScale : 0;
+	double nr = next->hostTime * hostSeconds; // host time is CACurrentMediaTime's clock
+	double rp = next->videoTimeScale ? (double) next->videoRefreshPeriod / next->videoTimeScale : 0;
+	os_unfair_lock_lock(&refreshLock);
+	nextRefresh = nr;
+	refreshPeriod = rp;
+	os_unfair_lock_unlock(&refreshLock);
 	return kCVReturnSuccess;
 }
 
@@ -2073,17 +2252,26 @@ static CVReturn onRefresh(CVDisplayLinkRef link, const CVTimeStamp *now, const C
 static CVDisplayLinkRef displayLink;
 static CGDirectDisplayID linkDisplay;
 static void startDisplayLink(void) {
-	static int started;
-	if (started) return;
-	started = 1;
+	if (displayLink) {
+		if (!CVDisplayLinkIsRunning(displayLink)) {
+			if (CVDisplayLinkStart(displayLink) == kCVReturnSuccess) return;
+			CVDisplayLinkRelease(displayLink);
+			displayLink = NULL;
+		} else {
+			return;
+		}
+	}
 	CGDirectDisplayID main = CGMainDisplayID();
-	if (CVDisplayLinkCreateWithCGDisplay(main, &displayLink) != kCVReturnSuccess) {
+	if (!main || CVDisplayLinkCreateWithCGDisplay(main, &displayLink) != kCVReturnSuccess) {
 		displayLink = NULL;
 		return;
 	}
 	linkDisplay = main;
 	CVDisplayLinkSetOutputCallback(displayLink, onRefresh, NULL);
-	CVDisplayLinkStart(displayLink); // runs for the life of the process
+	if (CVDisplayLinkStart(displayLink) != kCVReturnSuccess) {
+		CVDisplayLinkRelease(displayLink);
+		displayLink = NULL;
+	}
 }
 #pragma clang diagnostic pop
 static void followGameDisplay(double now);
@@ -2099,15 +2287,17 @@ static void followGameDisplay(double now);
 // scanout times (presentedTime 0, as on the mini's display) nothing changes: the margin stays the caller's.
 static int paceAdapt;
 static _Atomic double paceExtra;  // seconds added to the caller's margin
-static double paceTarget;         // the refresh the frame being presented was paced for (render thread)
+static _Atomic double paceTarget; // the refresh the frame being presented was paced for (shared with pqWorker)
 #define PACE_UP 0.00025
 #define PACE_DOWN 0.000005
 #define PACE_EXTRA_MAX 0.006
 void mc_pace_adapt(int on) { paceAdapt = on; }
 double mc_pace_extra_ms(void) { return paceExtra * 1e3; }
 static void paceWatch(id<CAMetalDrawable> drawable) {
-	if (!paceAdapt || paceTarget <= 0) return;
-	double target = paceTarget, period = refreshPeriod;
+	double target = atomic_load(&paceTarget);
+	if (!paceAdapt || target <= 0) return;
+	double anchor, period;
+	readRefresh(&anchor, &period);
 	[drawable addPresentedHandler:^(id<MTLDrawable> d) {
 		double shown = d.presentedTime;
 		if (shown <= 0 || period <= 0) return;
@@ -2121,14 +2311,21 @@ int mc_pace(double margin) {
 	startDisplayLink();
 	double now = CACurrentMediaTime();
 	followGameDisplay(now);
-	double anchor = nextRefresh, period = refreshPeriod, lead = gpuLatency + margin + paceExtra;
-	if (lastPace > 0) frameInterval += (now - lastPace - frameInterval) * 0.1;
+	double anchor, period;
+	readRefresh(&anchor, &period);
+	double lead = atomic_load(&gpuLatency) + margin + paceExtra;
+	if (lastPace > 0) {
+		double dt = now - lastPace;
+		if (dt > 0.1) dt = 0.1;
+		frameInterval += (dt - frameInterval) * 0.1;
+	}
 	lastPace = now;
 	if (period <= 0 || now - anchor > 0.25) return 1; // no refreshes lately (starting, display asleep): present everything
+	if (pacedFor > now + period * 4) pacedFor = 0; // self-heal after a stall or display switch
 	double target = anchor + ceil((now + lead - anchor) / period) * period;
 	if (target < pacedFor + period / 2 || now + 2 * frameInterval + lead < target) return 0;
 	pacedFor = target;
-	paceTarget = target;
+	atomic_store(&paceTarget, target);
 	return 1;
 }
 
@@ -2139,12 +2336,17 @@ int mc_pace(double margin) {
 void mc_sleep_precise(int64_t ns) {
 	static __thread int kq = -1;
 	if (ns <= 0) return;
+	double deadline = CACurrentMediaTime() + (double) ns * 1e-9;
 	if (kq < 0) kq = kqueue();
 	struct kevent64_s ev, out;
 	EV_SET64(&ev, 1, EVFILT_TIMER, EV_ADD | EV_ONESHOT, NOTE_NSECONDS | NOTE_CRITICAL | NOTE_LEEWAY, ns, 0, 0, 0);
 	if (kq < 0 || kevent64(kq, &ev, 1, &out, 1, 0, NULL) < 0) {
-		struct timespec t = {ns / 1000000000, ns % 1000000000};
-		nanosleep(&t, NULL);
+		double rem = deadline - CACurrentMediaTime();
+		if (rem > 0) {
+			int64_t rns = (int64_t) (rem * 1e9);
+			struct timespec t = {rns / 1000000000, rns % 1000000000};
+			nanosleep(&t, NULL);
+		}
 	}
 }
 
@@ -2198,6 +2400,7 @@ void mc_vsync_view(NSView *view) {
 	gameView = view;
 	nextDisplayCheck = 0;
 }
+static double llTarget;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations" // CVDisplayLink, as above
 static void followGameDisplay(double now) {
@@ -2208,13 +2411,24 @@ static void followGameDisplay(double now) {
 		NSNumber *number = gameView.window.screen.deviceDescription[@"NSScreenNumber"];
 		display = number ? number.unsignedIntValue : 0;
 	}
-	if (!display || display == linkDisplay || CVDisplayLinkSetCurrentCGDisplay(displayLink, display) != kCVReturnSuccess) return;
+	if (!display || display == linkDisplay) return;
+	CVDisplayLinkStop(displayLink);
+	if (CVDisplayLinkSetCurrentCGDisplay(displayLink, display) != kCVReturnSuccess) {
+		CVDisplayLinkStart(displayLink);
+		return;
+	}
 	linkDisplay = display;
+	os_unfair_lock_lock(&refreshLock);
 	nextRefresh = 0;
 	refreshPeriod = 0;
+	os_unfair_lock_unlock(&refreshLock);
 	vsyncPeriod = 0;
 	vsyncDue = 0;
 	vsyncShown = 0;
+	pacedFor = 0;
+	atomic_store(&paceTarget, 0);
+	llTarget = 0;
+	CVDisplayLinkStart(displayLink);
 }
 #pragma clang diagnostic pop
 double mc_vsync_wait(double offset) {
@@ -2222,7 +2436,8 @@ double mc_vsync_wait(double offset) {
 	vsyncTrack = 1;
 	double now = CACurrentMediaTime();
 	followGameDisplay(now);
-	double anchor = nextRefresh, period = refreshPeriod;
+	double anchor, period;
+	readRefresh(&anchor, &period);
 	if (vsyncFirst == 0) vsyncFirst = now;
 	int test = vsyncTestMode && now - vsyncFirst >= vsyncTestFrom && now - vsyncFirst < vsyncTestTo ? vsyncTestMode : 0;
 	if (test == 2) return -2;
@@ -2238,7 +2453,8 @@ double mc_vsync_wait(double offset) {
 	else if (due < passed) due = passed;                     // late, or the first frame: due at the latest refresh
 	double wait = due + offset - now;
 	if (wait <= 0) {
-		if (drawableWait < 0.002) {
+		double drainThreshold = period > 0.012 ? period * 0.25 : 0.002;
+		if (drawableWait < drainThreshold) {
 			vsyncDue = passed;
 			return 0;
 		}
@@ -2259,7 +2475,7 @@ double mc_vsync_wait(double offset) {
 // wake-to-GPU-done time of the last 32 frames plus the caller's margin. A frame that does not fit in its lead is shown a refresh late. Returns
 // the seconds waited, or -1 / -2 as mc_vsync_wait (no grid: no wait).
 static int llOn;               // set by the first mc_vsync_wait_next: mc_present then measures wake-to-GPU-done
-static double llWake, llTarget; // when the current frame's CPU work began, and the refresh it is aimed at (render thread)
+static double llWake;          // when the current frame's CPU work began (render thread; llTarget declared above)
 static _Atomic double llTotals[32];
 static _Atomic int llCount;    // totals written so far (completed handlers)
 double mc_vsync_wait_next(double margin) {
@@ -2268,7 +2484,8 @@ double mc_vsync_wait_next(double margin) {
 	llOn = 1;
 	double now = CACurrentMediaTime();
 	followGameDisplay(now);
-	double anchor = nextRefresh, period = refreshPeriod;
+	double anchor, period;
+	readRefresh(&anchor, &period);
 	if (period > 0) vsyncPeriod = period;
 	else period = vsyncPeriod;
 	if (now - anchor > 0.25) anchor = vsyncShown;
@@ -2298,6 +2515,7 @@ double mc_vsync_wait_next(double margin) {
 }
 
 id<CAMetalDrawable> mc_layer_next(CAMetalLayer *layer) {
+	if (!layer) return nil;
 	@autoreleasepool {
 		double t = CACurrentMediaTime();
 		id<CAMetalDrawable> drawable = [[layer nextDrawable] retain];
@@ -2308,6 +2526,7 @@ id<CAMetalDrawable> mc_layer_next(CAMetalLayer *layer) {
 
 // Draws src into the drawable (flipped back to top-down) and schedules the present on the current command buffer.
 void mc_present(Enc *enc, id<CAMetalDrawable> drawable, id<MTLTexture> src) {
+	if (!drawable || !src) return;
 	endBlit(enc);
 	endRender(enc);
 	@autoreleasepool {
@@ -2322,7 +2541,7 @@ void mc_present(Enc *enc, id<CAMetalDrawable> drawable, id<MTLTexture> src) {
 		[r drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
 		[r endEncoding];
 		double encodedAt = CACurrentMediaTime();
-		[cmd(enc) addCompletedHandler:^(id<MTLCommandBuffer> b) { gpuLatency += (CACurrentMediaTime() - encodedAt - gpuLatency) * 0.1; }];
+		[cmd(enc) addCompletedHandler:^(id<MTLCommandBuffer> b) { recordGpuLatency(CACurrentMediaTime() - encodedAt); }];
 		if (llOn) {  // -Dmcms.metal.vsyncLowLatency: this frame's wake-to-GPU-done time, for the next frames' lead
 			double wake = llWake;
 			[cmd(enc) addCompletedHandler:^(id<MTLCommandBuffer> b) { llTotals[atomic_fetch_add(&llCount, 1) & 31] = CACurrentMediaTime() - wake; }];
@@ -2379,6 +2598,7 @@ static int pqFill(Enc *enc, id<MTLTexture> src) {
 			d.storageMode = MTLStorageModePrivate;
 			st = pqStaging[k] = [ctx->device newTextureWithDescriptor:d];
 		}
+		if (!st) return -1;
 		atomic_store(&pqBusy[k], 1);
 		pqNext = (k + 1) % PQ_SLOTS;
 		id<MTLBlitCommandEncoder> b = [cmd(enc) blitCommandEncoder];
@@ -2407,7 +2627,7 @@ static void pqEncodePresent(id<CAMetalDrawable> drawable, int slot, uint64_t wai
 	[r drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
 	[r endEncoding];
 	[p addCompletedHandler:^(id<MTLCommandBuffer> cb) {
-		gpuLatency += (CACurrentMediaTime() - queuedAt - gpuLatency) * 0.1;
+		recordGpuLatency(CACurrentMediaTime() - queuedAt);
 		atomic_store(&pqBusy[slot], 0);
 	}];
 	paceWatch(drawable);
@@ -2436,7 +2656,7 @@ static dispatch_queue_t pqWorker;
 static _Atomic uint64_t pqHandoff;  // fill value << 2 | slot; 0 = none
 static _Atomic int pqScheduled;
 static _Atomic long pqDropped;
-static CAMetalLayer *pqLayer;
+static _Atomic(void *) pqLayer;
 static long pqCadence[PQ_SLOTS];
 static double pqQueuedAt[PQ_SLOTS];
 static uint64_t pqAcq;  // this frame's hand-off, published by pqSubmit after the commit
@@ -2446,7 +2666,7 @@ int mc_present_queued_acquire(Enc *enc, CAMetalLayer *layer, id<MTLTexture> src,
 	int k = pqFill(enc, src);
 	if (k < 0) return 0;
 	if (pqAcq) atomic_store(&pqBusy[pqAcq & 3], 0);  // two presents in one frame: the newer one wins
-	pqLayer = layer;
+	atomic_store(&pqLayer, (void *) layer);
 	pqCadence[k] = cadence;
 	pqQueuedAt[k] = CACurrentMediaTime();
 	pqAcq = pqValue << 2 | (uint64_t) k;
@@ -2459,8 +2679,13 @@ static void pqWork(void) {
 		uint64_t h = atomic_exchange(&pqHandoff, 0);
 		if (!h) return;
 		int slot = (int) (h & 3);
+		CAMetalLayer *layer = (CAMetalLayer *) atomic_load(&pqLayer);
+		if (!layer) {
+			atomic_store(&pqBusy[slot], 0);
+			continue;
+		}
 		@autoreleasepool {
-			id<CAMetalDrawable> drawable = [pqLayer nextDrawable];
+			id<CAMetalDrawable> drawable = [layer nextDrawable];
 			if (!drawable) {  // window hidden: drop this present
 				atomic_store(&pqBusy[slot], 0);
 				continue;
@@ -2468,6 +2693,24 @@ static void pqWork(void) {
 			if (pqCadence[slot] >= 0) mc_cadence_present(drawable, (int) pqCadence[slot]);
 			pqEncodePresent(drawable, slot, h >> 2, pqQueuedAt[slot]);
 		}
+	}
+}
+
+void mc_present_stop(void) {
+	uint64_t old = atomic_exchange(&pqHandoff, 0);
+	if (old) atomic_store(&pqBusy[old & 3], 0);
+	if (pqAcq) {
+		atomic_store(&pqBusy[pqAcq & 3], 0);
+		pqAcq = 0;
+	}
+	if (pqDrawable) {
+		[pqDrawable release];
+		pqDrawable = nil;
+		atomic_store(&pqBusy[pqSlot], 0);
+	}
+	atomic_store(&pqLayer, NULL);
+	if (pqWorker) {
+		dispatch_sync(pqWorker, ^{});
 	}
 }
 

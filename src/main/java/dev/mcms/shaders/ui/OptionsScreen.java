@@ -73,15 +73,15 @@ public final class OptionsScreen extends Screen {
 	 *
 	 * @param valuesError why the values file could not be read (the defaults then show, as the engine loads them); null
 	 */
-	private record Loaded(PackModel model, OptionLabels labels, ScreenTree.Screen main, @Nullable String valuesError) {
+	private record Loaded(PackModel.OptionsData data, OptionLabels labels, ScreenTree.Screen main, @Nullable String valuesError) {
 	}
 
 	private final Screen parent;
 	private final String packName;
 	private final Path valuesFile;
 	/**
-	 * The pack's read, off the render thread: it takes 0.6 s (BSL) to 3.3 s (Photon), so the screen opens at once and fills
-	 * its rows when the read lands ({@link #tick}).
+	 * The pack's options read, off the render thread, so the screen opens at once and fills its rows when the read lands
+	 * ({@link #tick}).
 	 */
 	private final CompletableFuture<Loaded> reading;
 	private @Nullable Loaded loaded;
@@ -99,6 +99,8 @@ public final class OptionsScreen extends Screen {
 	/** Replaces the error line while set (a save that failed). */
 	private @Nullable Component note;
 	private @Nullable Button profileButton;
+	/** Two-click safety guard on Reset so players do not wipe pack settings by accident. */
+	private boolean resetArmed;
 
 	private OptionsList list;
 	private HeaderAndFooterLayout layout;
@@ -139,9 +141,9 @@ public final class OptionsScreen extends Screen {
 				saved = new Properties();
 				valuesError = e.toString();
 			}
-			PackModel model = PackModel.load(source, StandardMacros.engine(distant), language, saved);
-			OptionLabels labels = new OptionLabels(model.lang(), Lang.select(source, Lang.FALLBACK));
-			return new Loaded(model, labels, mainScreen(model), valuesError);
+			PackModel.OptionsData data = PackModel.loadOptions(source, StandardMacros.engine(distant), language, saved);
+			OptionLabels labels = new OptionLabels(data.lang(), Lang.select(source, Lang.FALLBACK));
+			return new Loaded(data, labels, mainScreen(data), valuesError);
 		} catch (IOException e) {
 			throw new UncheckedIOException(e);
 		}
@@ -153,7 +155,7 @@ public final class OptionsScreen extends Screen {
 		if (loaded != null || loadError != null || !reading.isDone()) return;
 		try {
 			loaded = reading.join();
-			original = loaded.model().values();
+			original = loaded.data().values();
 			current = original;
 			if (loaded.valuesError() != null) {
 				note = Component.translatable("quicksilver.shaders.options.values_unreadable", loaded.valuesError());
@@ -167,10 +169,10 @@ public final class OptionsScreen extends Screen {
 	}
 
 	/** The main screen; a pack without a {@code screen} directive shows every option (the documented default). */
-	private static ScreenTree.Screen mainScreen(PackModel model) {
-		ScreenTree.Screen main = model.screens().screens().get(ScreenTree.MAIN);
+	private static ScreenTree.Screen mainScreen(PackModel.OptionsData data) {
+		ScreenTree.Screen main = data.screens().screens().get(ScreenTree.MAIN);
 		if (main == null) {
-			main = ScreenTree.parse(Map.of("screen", "*"), model.options()).screens().get(ScreenTree.MAIN);
+			main = ScreenTree.parse(Map.of("screen", "*"), data.options()).screens().get(ScreenTree.MAIN);
 		}
 		return main;
 	}
@@ -179,12 +181,14 @@ public final class OptionsScreen extends Screen {
 	protected void init() {
 		layout = new HeaderAndFooterLayout(this, HEADER, FOOTER);
 		list = layout.addToContents(new OptionsList(minecraft, width, height - HEADER - FOOTER, HEADER, ROW));
+		int btnW = Math.min(90, Math.max(60, (width - 36) / 4));
 		LinearLayout row = layout.addToFooter(LinearLayout.horizontal().spacing(6));
-		back = row.addChild(Button.builder(Component.translatable("gui.back"), b -> goBack()).width(90).build());
-		reset = row.addChild(Button.builder(Component.translatable("controls.reset"), b -> reset()).width(90).build());
-		row.addChild(Button.builder(Component.translatable("gui.cancel"), b -> onClose()).width(90).build());
+		back = row.addChild(Button.builder(Component.translatable("gui.back"), b -> goBack()).width(btnW).build());
+		reset = row.addChild(Button.builder(Component.translatable("controls.reset"), b -> reset()).width(btnW).build());
+		row.addChild(Button.builder(Component.translatable("gui.cancel"), b -> onClose()).width(btnW).build());
 		apply = row.addChild(Button.builder(Component.translatable("quicksilver.shaders.button.apply"), b -> apply())
-			.width(90).build());
+			.width(btnW).build());
+		resetArmed = false;
 		layout.visitWidgets(this::addRenderableWidget);
 		rebuildRows();
 		repositionElements();
@@ -199,7 +203,10 @@ public final class OptionsScreen extends Screen {
 	@Override
 	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
 		super.extractRenderState(graphics, mouseX, mouseY, partialTick);
-		graphics.centeredText(font, title, width / 2, 9, WHITE);
+		Component headerTitle = loaded != null && !screen.equals(ScreenTree.MAIN)
+			? Component.literal(loaded.labels().screenTitle(screen))
+			: title;
+		graphics.centeredText(font, headerTitle, width / 2, 9, WHITE);
 		Component line = note != null ? note : loadError;
 		if (line != null) {
 			ScreenText.status(graphics, font, line, width, 22, RED);
@@ -254,10 +261,11 @@ public final class OptionsScreen extends Screen {
 	private ScreenTree.@Nullable Screen screenNamed(String name) {
 		if (loaded == null) return null;
 		if (name.equals(ScreenTree.MAIN)) return loaded.main();
-		return loaded.model().screens().screens().get(name);
+		return loaded.data().screens().screens().get(name);
 	}
 
 	private void navigate(String target) {
+		disarmReset();
 		history.push(screen);
 		screen = target;
 		rebuildRows();
@@ -265,6 +273,7 @@ public final class OptionsScreen extends Screen {
 
 	private void goBack() {
 		if (history.isEmpty()) return;
+		disarmReset();
 		screen = history.pop();
 		rebuildRows();
 	}
@@ -273,15 +282,19 @@ public final class OptionsScreen extends Screen {
 		CycleButton<Float> button = CycleButton.<Float>builder(v -> Component.literal(Float.toString(v)), handDepth)
 			.withValues(QuicksilverSettings.HAND_DEPTHS)
 			.create(0, 0, 150, BUTTON_H, Component.translatable("quicksilver.shaders.hand_depth"),
-				(btn, v) -> handDepth = v);
+				(btn, v) -> {
+					disarmReset();
+					handDepth = v;
+				});
 		return withTip(button, Component.translatable("quicksilver.shaders.hand_depth.tooltip"));
 	}
 
 	private @Nullable AbstractWidget optionWidget(String name) {
 		if (loaded == null) return null;
-		PackOption option = loaded.model().options().get(name).orElse(null);
+		PackOption option = loaded.data().options().get(name).orElse(null);
 		if (option == null) return null;
-		String label = loaded.labels().optionName(name);
+		OptionLabels labels = loaded.labels();
+		String label = labels.optionName(name);
 		String value = current.get(name);
 		if (option.ambiguous() || option.hiddenConst() || (option.kind() != OptionKind.BOOLEAN && option.values().isEmpty())) {
 			Component reason = Component.translatable(option.ambiguous() ? "quicksilver.shaders.option.ambiguous"
@@ -291,15 +304,21 @@ public final class OptionsScreen extends Screen {
 			disabled.active = false;
 			return withTip(disabled, reason);
 		}
-		String comment = loaded.labels().optionComment(option);
+		String comment = labels.optionComment(option);
 		Component tip = comment.isEmpty() ? null : Component.literal(comment);
 		Component caption = Component.literal(label);
 		if (option.kind() == OptionKind.BOOLEAN) {
-			CycleButton<Boolean> toggle = CycleButton.onOffBuilder(current.isOn(name))
-				.create(0, 0, 150, BUTTON_H, caption, (btn, v) -> change(name, v.toString()));
+			boolean customLabels = labels.hasValueLabel(name, "true") || labels.hasValueLabel(name, "false")
+				|| !labels.prefix(name).isEmpty() || !labels.suffix(name).isEmpty();
+			CycleButton<Boolean> toggle = customLabels
+				? CycleButton.<Boolean>builder(v -> Component.literal(displayed(name, v.toString())), current.isOn(name))
+					.withValues(Boolean.TRUE, Boolean.FALSE)
+					.create(0, 0, 150, BUTTON_H, caption, (btn, v) -> change(name, v.toString()))
+				: CycleButton.onOffBuilder(current.isOn(name))
+					.create(0, 0, 150, BUTTON_H, caption, (btn, v) -> change(name, v.toString()));
 			return withTip(toggle, tip);
 		}
-		if (loaded.model().properties().sliders().contains(name)) {
+		if (loaded.data().properties().sliders().contains(name)) {
 			ValueSlider slider = new ValueSlider(150, BUTTON_H, label, option.values(), value,
 				v -> displayed(name, v), v -> change(name, v));
 			return withTip(slider, tip);
@@ -330,7 +349,7 @@ public final class OptionsScreen extends Screen {
 	}
 
 	private ProfileSet profiles() {
-		return loaded.model().profiles();
+		return loaded.data().profiles();
 	}
 
 	/** The profile button's text: the profile the values match, or "Custom". */
@@ -348,22 +367,39 @@ public final class OptionsScreen extends Screen {
 
 	/** Moves to the next profile in the file's order; a Custom setting starts at the first. */
 	private void cycleProfile() {
+		disarmReset();
 		List<String> names = profiles().names();
 		if (names.isEmpty()) return;
 		Optional<ProfileSet.Resolved> now = profiles().detect(current);
 		int next = now.map(r -> names.indexOf(r.name()) + 1).orElse(0) % names.size();
-		current = current.with(loaded.model().options(), profiles().resolve(names.get(next)).settings());
+		current = profiles().apply(current, names.get(next));
 		rebuildRows();
 	}
 
 	private void change(String name, String value) {
-		current = current.with(loaded.model().options(), Map.of(name, value));
+		disarmReset();
+		current = current.with(loaded.data().options(), Map.of(name, value));
 		refreshProfileLabel();
+	}
+
+	private void disarmReset() {
+		if (resetArmed) {
+			resetArmed = false;
+			if (reset != null) {
+				reset.setMessage(Component.translatable("controls.reset"));
+			}
+		}
 	}
 
 	private void reset() {
 		if (loaded == null) return;
-		current = OptionValues.defaults(loaded.model().options());
+		if (!resetArmed) {
+			resetArmed = true;
+			reset.setMessage(Component.translatable("quicksilver.shaders.options.reset_confirm"));
+			return;
+		}
+		disarmReset();
+		current = OptionValues.defaults(loaded.data().options());
 		handDepth = StandardMacros.DEFAULT_HAND_DEPTH;
 		rebuildRows();
 	}
@@ -374,7 +410,8 @@ public final class OptionsScreen extends Screen {
 	 */
 	private void apply() {
 		if (loaded == null) return;
-		OptionCatalog catalog = loaded.model().options();
+		disarmReset();
+		OptionCatalog catalog = loaded.data().options();
 		try {
 			// The file's names the pack does not declare stay as they were (OptionFile): Reset and edits never touch them.
 			OptionFile.write(valuesFile, OptionValues.defaults(catalog).values(), current.values(), original.unknown());
@@ -402,6 +439,7 @@ public final class OptionsScreen extends Screen {
 
 	@Override
 	public void onClose() {
+		reading.cancel(true);
 		minecraft.gui.setScreen(parent);
 	}
 

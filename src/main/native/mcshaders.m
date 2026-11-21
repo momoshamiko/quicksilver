@@ -83,12 +83,14 @@ void mcs_render_viewport(Enc *enc, double x, double y, double w, double h) {
  * formats stay; it holds no texture between encodes, so a resize frees the old textures at once.
  */
 static id<MTLFXSpatialScaler> spatialScaler;
+static id<MTLDevice> spatialDevice;
 static NSUInteger spatialInW, spatialInH, spatialOutW, spatialOutH;
 static MTLPixelFormat spatialInFormat, spatialOutFormat;
 
 void mcs_spatial_release(void) {
 	[spatialScaler release];
 	spatialScaler = nil;
+	spatialDevice = nil;
 }
 
 /*
@@ -100,48 +102,57 @@ void mcs_spatial_release(void) {
  * build, -3 in lacks the scaler's colour texture usage, -4 out lacks its output texture usage, -5 out is not private.
  */
 int mcs_spatial_scale(Enc *enc, id<MTLTexture> in, id<MTLTexture> out, int refuse) {
+	if (!enc || !enc->ctx || !in || !out) return -2;
 	@autoreleasepool {
-		id<MTLDevice> device = enc->ctx->device;
-		if (refuse || ![MTLFXSpatialScalerDescriptor supportsDevice:device]) return -1;
-		int built = 0;
-		if (!spatialScaler || in.width != spatialInW || in.height != spatialInH || out.width != spatialOutW
-				|| out.height != spatialOutH || in.pixelFormat != spatialInFormat || out.pixelFormat != spatialOutFormat) {
+		@try {
+			id<MTLDevice> device = enc->ctx->device;
+			if (refuse || ![MTLFXSpatialScalerDescriptor supportsDevice:device]) return -1;
+			if (in.width < 1 || in.height < 1 || out.width < 1 || out.height < 1) return -2;
+			int built = 0;
+			if (!spatialScaler || spatialDevice != device || in.width != spatialInW || in.height != spatialInH
+					|| out.width != spatialOutW || out.height != spatialOutH || in.pixelFormat != spatialInFormat
+					|| out.pixelFormat != spatialOutFormat) {
+				mcs_spatial_release();
+				MTLFXSpatialScalerDescriptor *d = [[MTLFXSpatialScalerDescriptor new] autorelease];
+				d.inputWidth = in.width;
+				d.inputHeight = in.height;
+				d.outputWidth = out.width;
+				d.outputHeight = out.height;
+				d.colorTextureFormat = in.pixelFormat;
+				d.outputTextureFormat = out.pixelFormat;
+				d.colorProcessingMode = MTLFXSpatialScalerColorProcessingModePerceptual;
+				spatialScaler = [d newSpatialScalerWithDevice:device];
+				if (!spatialScaler) return -2;
+				spatialDevice = device;
+				spatialInW = in.width;
+				spatialInH = in.height;
+				spatialOutW = out.width;
+				spatialOutH = out.height;
+				spatialInFormat = in.pixelFormat;
+				spatialOutFormat = out.pixelFormat;
+				built = 1;
+			}
+			MTLTextureUsage colorUsage = spatialScaler.colorTextureUsage, outputUsage = spatialScaler.outputTextureUsage;
+			// A refusal keeps no scaler: the engine falls back to its copy draw and would not use it (ADR 0008 review).
+			int refusal = (in.usage & colorUsage) != colorUsage ? -3 : (out.usage & outputUsage) != outputUsage ? -4
+				: out.storageMode != MTLStorageModePrivate ? -5 : 0;
+			if (refusal != 0) {
+				mcs_spatial_release();
+				return refusal;
+			}
+			id<MTLCommandBuffer> c = mc_frame_cmd(enc);
+			spatialScaler.colorTexture = in;
+			spatialScaler.outputTexture = out;
+			spatialScaler.inputContentWidth = in.width;
+			spatialScaler.inputContentHeight = in.height;
+			[spatialScaler encodeToCommandBuffer:c];
+			spatialScaler.colorTexture = nil;
+			spatialScaler.outputTexture = nil;
+			return built;
+		} @catch (NSException *ex) {
 			mcs_spatial_release();
-			MTLFXSpatialScalerDescriptor *d = [[MTLFXSpatialScalerDescriptor new] autorelease];
-			d.inputWidth = in.width;
-			d.inputHeight = in.height;
-			d.outputWidth = out.width;
-			d.outputHeight = out.height;
-			d.colorTextureFormat = in.pixelFormat;
-			d.outputTextureFormat = out.pixelFormat;
-			d.colorProcessingMode = MTLFXSpatialScalerColorProcessingModePerceptual;
-			spatialScaler = [d newSpatialScalerWithDevice:device];
-			if (!spatialScaler) return -2;
-			spatialInW = in.width;
-			spatialInH = in.height;
-			spatialOutW = out.width;
-			spatialOutH = out.height;
-			spatialInFormat = in.pixelFormat;
-			spatialOutFormat = out.pixelFormat;
-			built = 1;
+			return -2;
 		}
-		MTLTextureUsage colorUsage = spatialScaler.colorTextureUsage, outputUsage = spatialScaler.outputTextureUsage;
-		// A refusal keeps no scaler: the engine falls back to its copy draw and would not use it (ADR 0008 review).
-		int refusal = (in.usage & colorUsage) != colorUsage ? -3 : (out.usage & outputUsage) != outputUsage ? -4
-			: out.storageMode != MTLStorageModePrivate ? -5 : 0;
-		if (refusal != 0) {
-			mcs_spatial_release();
-			return refusal;
-		}
-		id<MTLCommandBuffer> c = mc_frame_cmd(enc);
-		spatialScaler.colorTexture = in;
-		spatialScaler.outputTexture = out;
-		spatialScaler.inputContentWidth = in.width;
-		spatialScaler.inputContentHeight = in.height;
-		[spatialScaler encodeToCommandBuffer:c];
-		spatialScaler.colorTexture = nil;
-		spatialScaler.outputTexture = nil;
-		return built;
 	}
 }
 
@@ -150,7 +161,8 @@ int mcs_spatial_scale(Enc *enc, id<MTLTexture> in, id<MTLTexture> out, int refus
 static void copyError(NSError *e, char *err, int cap) {
 	if (err && cap > 0) {
 		NSString *text = e ? (e.localizedDescription.length ? e.localizedDescription : e.description) : @"unknown error";
-		strlcpy(err, text.UTF8String, cap);
+		const char *utf8 = text.UTF8String;
+		strlcpy(err, utf8 ? utf8 : "unknown error", cap);
 	}
 }
 // mcmetal.m's TK_LIBRARY: the engine's libraries are counted with the backend's objects (mc_track_count).
@@ -158,15 +170,29 @@ extern id mc_track_object(id obj, int kind);
 enum { MCS_TK_LIBRARY = 7 };
 id<MTLLibrary> mcs_library_new(Ctx *ctx, const char *source, char *err, int errCap, int languageVersion, int mathMode,
 	int preserveInvariance) {
+	if (!ctx || !source) {
+		if (err && errCap > 0) strlcpy(err, "invalid library arguments", errCap);
+		return nil;
+	}
 	@autoreleasepool {
-		MTLCompileOptions *o = [[MTLCompileOptions new] autorelease];
-		o.languageVersion = (MTLLanguageVersion) languageVersion;
-		o.mathMode = (MTLMathMode) mathMode;
-		o.preserveInvariance = preserveInvariance != 0;
-		NSError *e = nil;
-		id<MTLLibrary> lib = [ctx->device newLibraryWithSource:[NSString stringWithUTF8String:source] options:o error:&e];
-		if (!lib) copyError(e, err, errCap);
-		return mc_track_object(lib, MCS_TK_LIBRARY);
+		@try {
+			NSString *src = [NSString stringWithUTF8String:source];
+			if (!src) {
+				if (err && errCap > 0) strlcpy(err, "invalid UTF-8 shader source", errCap);
+				return nil;
+			}
+			MTLCompileOptions *o = [[MTLCompileOptions new] autorelease];
+			o.languageVersion = (MTLLanguageVersion) languageVersion;
+			o.mathMode = (MTLMathMode) mathMode;
+			o.preserveInvariance = preserveInvariance != 0;
+			NSError *e = nil;
+			id<MTLLibrary> lib = [ctx->device newLibraryWithSource:src options:o error:&e];
+			if (!lib) copyError(e, err, errCap);
+			return mc_track_object(lib, MCS_TK_LIBRARY);
+		} @catch (NSException *ex) {
+			if (err && errCap > 0) strlcpy(err, ex.reason ? ex.reason.UTF8String : "Metal exception", errCap);
+			return nil;
+		}
 	}
 }
 
@@ -193,94 +219,134 @@ int mcs_function_names(id<MTLLibrary> library, char *out, int cap) {
 
 id<MTLComputePipelineState> mcs_compute_pipeline_new(Ctx *ctx, id<MTLLibrary> library, const char *entry, char *err,
 	int errCap, int *maxThreads) {
+	if (maxThreads) *maxThreads = 0;
+	if (!ctx || !library || !entry) {
+		if (err && errCap > 0) strlcpy(err, "invalid compute pipeline arguments", errCap);
+		return nil;
+	}
 	@autoreleasepool {
-		if (maxThreads) *maxThreads = 0;
-		id<MTLFunction> fn = [[library newFunctionWithName:[NSString stringWithUTF8String:entry]] autorelease];
-		if (!fn) {
-			strlcpy(err, "the library has no function of that name", errCap);
+		@try {
+			NSString *entryName = [NSString stringWithUTF8String:entry];
+			if (!entryName) {
+				if (err && errCap > 0) strlcpy(err, "invalid UTF-8 entry name", errCap);
+				return nil;
+			}
+			id<MTLFunction> fn = [[library newFunctionWithName:entryName] autorelease];
+			if (!fn) {
+				if (err && errCap > 0) strlcpy(err, "the library has no function of that name", errCap);
+				return nil;
+			}
+			NSError *e = nil;
+			id<MTLComputePipelineState> pso = [ctx->device newComputePipelineStateWithFunction:fn error:&e];
+			if (!pso) {
+				copyError(e, err, errCap);
+				return nil;
+			}
+			if (maxThreads) *maxThreads = (int) pso.maxTotalThreadsPerThreadgroup;
+			return pso;
+		} @catch (NSException *ex) {
+			if (err && errCap > 0) strlcpy(err, ex.reason ? ex.reason.UTF8String : "Metal exception", errCap);
 			return nil;
 		}
-		NSError *e = nil;
-		id<MTLComputePipelineState> pso = [ctx->device newComputePipelineStateWithFunction:fn error:&e];
-		if (!pso) {
-			copyError(e, err, errCap);
-			return nil;
-		}
-		if (maxThreads) *maxThreads = (int) pso.maxTotalThreadsPerThreadgroup;
-		return pso;
 	}
 }
 
 id<MTLTexture> mcs_texture_new(Ctx *ctx, int format, int type, int width, int height, int depth, int mips, int usage,
 	int storage) {
 	// Validate before Metal: newTextureWithDescriptor aborts the process on some invalid arguments (for example
-	// mipmapLevelCount = 0) instead of returning nil, so a bad combination returns nil here and the caller reports it.
-	if (width < 1 || height < 1 || depth < 1 || mips < 1) return nil;
+	// mipmapLevelCount = 0 or MTLStorageModeManaged on Apple silicon) instead of returning nil.
+	if (!ctx || width < 1 || height < 1 || depth < 1 || mips < 1) return nil;
+	if (storage == MTLStorageModeManaged) return nil;
+	if ((type == MTLTextureTypeCube || type == MTLTextureTypeCubeArray) && width != height) return nil;
+	int effH = type == MTLTextureType1D || type == MTLTextureType1DArray ? 1 : height;
+	int effD = type == MTLTextureType3D ? depth : 1;
+	int maxDim = width > effH ? width : effH;
+	if (effD > maxDim) maxDim = effD;
+	int maxMips = 32 - __builtin_clz((unsigned) maxDim);
+	if (mips > maxMips) return nil;
 	@autoreleasepool {
-		MTLTextureDescriptor *d = [[MTLTextureDescriptor new] autorelease];
-		d.textureType = (MTLTextureType) type;
-		d.pixelFormat = (MTLPixelFormat) format;
-		d.width = width;
-		d.height = type == MTLTextureType1D || type == MTLTextureType1DArray ? 1 : height;
-		if (type == MTLTextureType3D) d.depth = depth;
-		else if (type == MTLTextureType1DArray || type == MTLTextureType2DArray || type == MTLTextureTypeCubeArray)
-			d.arrayLength = depth;
-		d.mipmapLevelCount = mips;
-		d.usage = (MTLTextureUsage) usage;
-		d.storageMode = (MTLStorageMode) storage;
-		return [ctx->device newTextureWithDescriptor:d];
+		@try {
+			MTLTextureDescriptor *d = [[MTLTextureDescriptor new] autorelease];
+			d.textureType = (MTLTextureType) type;
+			d.pixelFormat = (MTLPixelFormat) format;
+			d.width = width;
+			d.height = effH;
+			if (type == MTLTextureType3D) d.depth = depth;
+			else if (type == MTLTextureType1DArray || type == MTLTextureType2DArray || type == MTLTextureTypeCubeArray)
+				d.arrayLength = depth;
+			d.mipmapLevelCount = mips;
+			d.usage = (MTLTextureUsage) usage;
+			d.storageMode = (MTLStorageMode) storage;
+			return [ctx->device newTextureWithDescriptor:d];
+		} @catch (NSException *ex) {
+			return nil;
+		}
 	}
 }
 
 int mcs_texture_upload(Ctx *ctx, id<MTLTexture> texture, const void *bytes, uint64_t bytesPerRow, uint64_t bytesPerImage,
 	int slice, int mip, int x, int y, int z, int w, int h, int d) {
+	if (!ctx || !texture || !bytes || w < 1 || h < 1 || d < 1 || slice < 0 || mip < 0 || x < 0 || y < 0 || z < 0) return 0;
 	@autoreleasepool {
-		// A 2D array takes one copy per layer (its depth is the layer count, not a Z extent); 3D and 2D copy once.
-		// The staging buffer holds d images: a 2D image is bytesPerRow * h, a 3D image is bytesPerImage.
-		uint64_t image = bytesPerImage > 0 ? bytesPerImage : bytesPerRow * (uint64_t) h;
-		uint64_t size = image * (uint64_t) d;
-		id<MTLBuffer> b = [ctx->device newBufferWithLength:size options:MTLResourceStorageModeShared];
-		if (!b) return 0;
-		memcpy(b.contents, bytes, size);
-		id<MTLCommandBuffer> cb = [ctx->queue commandBuffer];
-		id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
-		if (texture.textureType == MTLTextureType2DArray) {
-			for (int layer = 0; layer < d; layer++)
-				[blit copyFromBuffer:b sourceOffset:(uint64_t) layer * image sourceBytesPerRow:bytesPerRow
-					sourceBytesPerImage:0 sourceSize:MTLSizeMake(w, h, 1) toTexture:texture
-					destinationSlice:slice + layer destinationLevel:mip destinationOrigin:MTLOriginMake(x, y, 0)];
-		} else {
-			[blit copyFromBuffer:b sourceOffset:0 sourceBytesPerRow:bytesPerRow sourceBytesPerImage:bytesPerImage
-				sourceSize:MTLSizeMake(w, h, d) toTexture:texture destinationSlice:slice destinationLevel:mip
-				destinationOrigin:MTLOriginMake(x, y, z)];
+		@try {
+			// A 2D array takes one copy per layer (its depth is the layer count, not a Z extent); 3D and 2D copy once.
+			// The staging buffer holds d images: a 2D image is bytesPerRow * h, a 3D image is bytesPerImage.
+			uint64_t image = bytesPerImage > 0 ? bytesPerImage : bytesPerRow * (uint64_t) h;
+			uint64_t size = image * (uint64_t) d;
+			if (size == 0) return 0;
+			id<MTLBuffer> b = [[ctx->device newBufferWithLength:size options:MTLResourceStorageModeShared] autorelease];
+			if (!b) return 0;
+			memcpy(b.contents, bytes, size);
+			id<MTLCommandBuffer> cb = [ctx->queue commandBuffer];
+			if (!cb) return 0;
+			id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+			if (!blit) return 0;
+			if (texture.textureType == MTLTextureType2DArray) {
+				for (int layer = 0; layer < d; layer++)
+					[blit copyFromBuffer:b sourceOffset:(uint64_t) layer * image sourceBytesPerRow:bytesPerRow
+						sourceBytesPerImage:0 sourceSize:MTLSizeMake(w, h, 1) toTexture:texture
+						destinationSlice:slice + layer destinationLevel:mip destinationOrigin:MTLOriginMake(x, y, 0)];
+			} else {
+				[blit copyFromBuffer:b sourceOffset:0 sourceBytesPerRow:bytesPerRow sourceBytesPerImage:bytesPerImage
+					sourceSize:MTLSizeMake(w, h, d) toTexture:texture destinationSlice:slice destinationLevel:mip
+					destinationOrigin:MTLOriginMake(x, y, z)];
+			}
+			[blit endEncoding];
+			[cb commit];
+			[cb waitUntilCompleted];
+			return cb.status == MTLCommandBufferStatusCompleted && cb.error == nil;
+		} @catch (NSException *ex) {
+			return 0;
 		}
-		[blit endEncoding];
-		[cb commit];
-		[cb waitUntilCompleted];
-		int ok = cb.status == MTLCommandBufferStatusCompleted && cb.error == nil;
-		[b release];
-		return ok;
 	}
 }
 
 int mcs_texture_read(Ctx *ctx, id<MTLTexture> texture, int slice, int mip, int x, int y, int z, int w, int h, int d,
 	void *out, uint64_t bytesPerRow, uint64_t bytesPerImage) {
+	if (!ctx || !texture || !out || w < 1 || h < 1 || d < 1 || slice < 0 || mip < 0 || x < 0 || y < 0 || z < 0) return 0;
 	@autoreleasepool {
-		uint64_t size = bytesPerImage > 0 ? bytesPerImage * (uint64_t) d : bytesPerRow * (uint64_t) h;
-		id<MTLBuffer> b = [ctx->device newBufferWithLength:size options:MTLResourceStorageModeShared];
-		if (!b) return 0;
-		id<MTLCommandBuffer> cb = [ctx->queue commandBuffer];
-		id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
-		[blit copyFromTexture:texture sourceSlice:slice sourceLevel:mip sourceOrigin:MTLOriginMake(x, y, z)
-			sourceSize:MTLSizeMake(w, h, d) toBuffer:b destinationOffset:0 destinationBytesPerRow:bytesPerRow
-			destinationBytesPerImage:bytesPerImage];
-		[blit endEncoding];
-		[cb commit];
-		[cb waitUntilCompleted];
-		int ok = cb.status == MTLCommandBufferStatusCompleted && cb.error == nil;
-		if (ok) memcpy(out, b.contents, size);
-		[b release];
-		return ok;
+		@try {
+			uint64_t image = bytesPerImage > 0 ? bytesPerImage : bytesPerRow * (uint64_t) h;
+			uint64_t size = image * (uint64_t) d;
+			if (size == 0) return 0;
+			id<MTLBuffer> b = [[ctx->device newBufferWithLength:size options:MTLResourceStorageModeShared] autorelease];
+			if (!b) return 0;
+			id<MTLCommandBuffer> cb = [ctx->queue commandBuffer];
+			if (!cb) return 0;
+			id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+			if (!blit) return 0;
+			[blit copyFromTexture:texture sourceSlice:slice sourceLevel:mip sourceOrigin:MTLOriginMake(x, y, z)
+				sourceSize:MTLSizeMake(w, h, d) toBuffer:b destinationOffset:0 destinationBytesPerRow:bytesPerRow
+				destinationBytesPerImage:bytesPerImage];
+			[blit endEncoding];
+			[cb commit];
+			[cb waitUntilCompleted];
+			int ok = cb.status == MTLCommandBufferStatusCompleted && cb.error == nil;
+			if (ok) memcpy(out, b.contents, size);
+			return ok;
+		} @catch (NSException *ex) {
+			return 0;
+		}
 	}
 }
 

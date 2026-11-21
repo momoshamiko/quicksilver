@@ -171,7 +171,7 @@ public record ShaderProperties(
 		"separateEntityDraws", "skipAllRendering", "voxelizeLightBlocks", "indirect.pass", "allowConcurrentCompute");
 
 	private static final Set<String> FUNCS = Set.of("NEVER", "LESS", "EQUAL", "LEQUAL", "GREATER", "NOTEQUAL", "GEQUAL",
-		"GL_ALWAYS");
+		"ALWAYS", "GL_ALWAYS");
 	private static final Set<String> FACTORS = Set.of("ZERO", "ONE", "SRC_COLOR", "ONE_MINUS_SRC_COLOR", "DST_COLOR",
 		"ONE_MINUS_DST_COLOR", "SRC_ALPHA", "ONE_MINUS_SRC_ALPHA", "DST_ALPHA", "ONE_MINUS_DST_ALPHA", "SRC_ALPHA_SATURATE");
 	private static final Set<String> TARGETS = Set.of("TEXTURE_1D", "TEXTURE_2D", "TEXTURE_3D", "TEXTURE_RECTANGLE");
@@ -350,14 +350,18 @@ public record ShaderProperties(
 
 	private static Optional<AlphaTest> alphaTest(String key, String value, List<String> problems) {
 		// The docs name "off" only; Bliss and Mellow write "false" here, so it is read as off (observed in those packs).
-		if (value.equals("off") || value.equals("false")) return Optional.of(new AlphaTest(true, "", 0));
+		if (value.equalsIgnoreCase("off") || value.equalsIgnoreCase("false")) return Optional.of(new AlphaTest(true, "", 0));
 		String[] t = value.split("\\s+");
-		if (t.length != 2 || !FUNCS.contains(t[0])) {
+		String func = t.length > 0 ? t[0].toUpperCase(java.util.Locale.ROOT) : "";
+		if (t.length != 2 || !FUNCS.contains(func)) {
 			problems.add(key + "=" + value + ": expected off or <func> <ref>");
 			return Optional.empty();
 		}
+		if (func.equals("GL_ALWAYS")) {
+			func = "ALWAYS";
+		}
 		try {
-			return Optional.of(new AlphaTest(false, t[0], Double.parseDouble(t[1])));
+			return Optional.of(new AlphaTest(false, func, Double.parseDouble(t[1])));
 		} catch (NumberFormatException ex) {
 			problems.add(key + ": reference is not a number");
 			return Optional.empty();

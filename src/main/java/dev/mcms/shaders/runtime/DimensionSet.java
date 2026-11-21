@@ -325,6 +325,10 @@ public record DimensionSet(DimensionPrograms dimension, List<CompiledProgram> pa
 			.filter(u -> u.servedBy().equals(ProgramTranslation.Reflection.UniformUse.UNKNOWN))
 			.map(ProgramTranslation.Reflection.UniformUse::name).toList();
 		int[] attachments = attachmentPlan(request.outputs(), translation.reflection().outputs());
+		if (attachments.length == 0) {
+			return new CompiledProgram(name, phase, 0, false, List.of(), List.of(), unknown, translation.reflection(),
+				"program declares no colour outputs");
+		}
 		List<ProgramRequest.ColorTarget> used = new ArrayList<>();
 		for (int attachment : attachments) {
 			used.add(request.outputs().get(attachment));
@@ -359,10 +363,14 @@ public record DimensionSet(DimensionPrograms dimension, List<CompiledProgram> pa
 					"the standard road served no pipeline")
 				: new CompiledProgram(name, phase, pipeline, true, used, blendOn, unknown, translation.reflection(), null);
 		}
-		long pipeline = newPipeline(ctx, lib.library(), lib.library(), translation.vertexEntry(),
-			translation.fragmentEntry(), request, attachments, mainFormat, phase == Phase.FINAL, formats, name,
-			modelBlends, phase == Phase.SHADOWCOMP);
-		MetalBridge.release(lib.library());
+		long pipeline;
+		try {
+			pipeline = newPipeline(ctx, lib.library(), lib.library(), translation.vertexEntry(),
+				translation.fragmentEntry(), request, attachments, mainFormat, phase == Phase.FINAL, formats, name,
+				modelBlends, phase == Phase.SHADOWCOMP);
+		} finally {
+			MetalBridge.release(lib.library());
+		}
 		return pipeline == 0
 			? new CompiledProgram(name, phase, 0, false, used, blendOn, unknown, translation.reflection(),
 				"Metal rejected the pipeline of the translated program")
@@ -373,10 +381,13 @@ public record DimensionSet(DimensionPrograms dimension, List<CompiledProgram> pa
 	 * The colour attachments a program's fragment stage really writes, ascending: the reflection's attachment of
 	 * each fragment output, so a {@code DRAWBUFFERS:012} stage that writes locations 0 and 2 keeps target 2 on
 	 * attachment 2 and leaves attachment 1 (and its target) untouched. A stage that reports no output writes
-	 * attachment 0 ({@code gl_FragColor}'s documented target).
+	 * attachment 0 ({@code gl_FragColor}'s documented target), or none when {@code outputs} is empty.
 	 */
 	static int[] attachmentPlan(List<ProgramRequest.ColorTarget> outputs,
 			List<ProgramTranslation.Reflection.OutputUse> written) {
+		if (outputs.isEmpty()) {
+			return new int[0];
+		}
 		TreeSet<Integer> attachments = new TreeSet<>();
 		for (ProgramTranslation.Reflection.OutputUse output : written) {
 			if (output.attachment() >= 0 && output.attachment() < outputs.size()) {
@@ -441,42 +452,45 @@ public record DimensionSet(DimensionPrograms dimension, List<CompiledProgram> pa
 		// unused, pixel format 0), no depth, triangles. The final program's first attachment writes the main colour
 		// target. Blending is the documented default off unless the pack's blend.<program>[.<buffer>] names factors
 		// (OptiFine shaders.properties: off, or src dst srcA dstA).
-		int slots = attachments[attachments.length - 1] + 1;
-		int[] descriptor = new int[3 + slots * 9 + 2];
-		int i = 0;
-		descriptor[i++] = 0;
-		descriptor[i++] = 0;
-		descriptor[i++] = slots;
-		int next = 0;
-		for (int c = 0; c < slots; c++) {
-			if (next >= attachments.length || attachments[next] != c) {
-				i += 9;              // an unwritten slot: no pixel format, everything else stays zero
-				continue;
-			}
-			next++;
-			int target = request.outputs().get(c).target();
-			// A shadowcomp write names a shadow buffer: its format is the shadow word, so the colour rule is off (-1).
-			descriptor[i++] = c == 0 && finalPass ? mainFormat
-				: TargetFormats.of(formats.get(target), shadow ? -1 : target).format();
-			descriptor[i++] = 15;  // write all components
-			dev.mcms.shaders.pack.ShaderProperties.BlendState blend = shadow
-				? blendForShadow(modelBlends, name, target) : blendFor(modelBlends, name, target);
-			if (blend != null && !blend.off()) {
-				descriptor[i++] = 1;
-				descriptor[i++] = blendFactor(blend.src());
-				descriptor[i++] = blendFactor(blend.dst());
-				descriptor[i++] = 0;  // add
-				descriptor[i++] = blendFactor(blend.srcAlpha());
-				descriptor[i++] = blendFactor(blend.dstAlpha());
-				descriptor[i++] = 0;  // add
-			} else {
-				descriptor[i++] = 0;  // blending off
-				i += 6;
-			}
+		if (attachments.length == 0) {
+			return 0;
 		}
-		descriptor[i++] = 0;      // no depth
-		descriptor[i++] = 3;      // MTLPrimitiveTopologyClassTriangle
 		try {
+			int slots = attachments[attachments.length - 1] + 1;
+			int[] descriptor = new int[3 + slots * 9 + 2];
+			int i = 0;
+			descriptor[i++] = 0;
+			descriptor[i++] = 0;
+			descriptor[i++] = slots;
+			int next = 0;
+			for (int c = 0; c < slots; c++) {
+				if (next >= attachments.length || attachments[next] != c) {
+					i += 9;              // an unwritten slot: no pixel format, everything else stays zero
+					continue;
+				}
+				next++;
+				int target = request.outputs().get(c).target();
+				// A shadowcomp write names a shadow buffer: its format is the shadow word, so the colour rule is off (-1).
+				descriptor[i++] = c == 0 && finalPass ? mainFormat
+					: TargetFormats.of(formats.get(target), shadow ? -1 : target).format();
+				descriptor[i++] = 15;  // write all components
+				dev.mcms.shaders.pack.ShaderProperties.BlendState blend = shadow
+					? blendForShadow(modelBlends, name, target) : blendFor(modelBlends, name, target);
+				if (blend != null && !blend.off()) {
+					descriptor[i++] = 1;
+					descriptor[i++] = blendFactor(blend.src());
+					descriptor[i++] = blendFactor(blend.dst());
+					descriptor[i++] = 0;  // add
+					descriptor[i++] = blendFactor(blend.srcAlpha());
+					descriptor[i++] = blendFactor(blend.dstAlpha());
+					descriptor[i++] = 0;  // add
+				} else {
+					descriptor[i++] = 0;  // blending off
+					i += 6;
+				}
+			}
+			descriptor[i++] = 0;      // no depth
+			descriptor[i++] = 3;      // MTLPrimitiveTopologyClassTriangle
 			return MetalBridge.pipelineNew(ctx, vertexLibrary, vertexEntry, fragmentLibrary, fragmentEntry, descriptor);
 		} catch (RuntimeException e) {
 			return 0;
@@ -679,6 +693,41 @@ public record DimensionSet(DimensionPrograms dimension, List<CompiledProgram> pa
 		if (target >= 0) {
 			used.add(target);
 		}
+	}
+
+	private static final java.util.regex.Pattern COMMENT = java.util.regex.Pattern.compile("/\\*.*?\\*/|//[^\\n]*",
+		java.util.regex.Pattern.DOTALL);
+	private static final java.util.regex.Pattern COLORIMG_USE = java.util.regex.Pattern.compile("\\bcolorimg(1[0-5]|[0-9])\\b");
+
+	/**
+	 * The colortex indices bound as storage images ({@code colorimgN}) by any pass, compute kernel, or gbuffers stage of
+	 * this set. Only these targets request {@code MTLTextureUsageShaderWrite}; all other colour targets omit it so Apple
+	 * Silicon keeps lossless framebuffer compression enabled.
+	 */
+	public Set<Integer> imageTargets() {
+		Set<Integer> images = new TreeSet<>();
+		for (CompiledProgram pass : this.passes) {
+			for (ProgramTranslation.Reflection.ResourceUse image : pass.reflection().images()) {
+				addColourTarget(images, image.name());
+			}
+			for (ComputeKernel kernel : pass.kernels()) {
+				for (ProgramTranslation.Reflection.ResourceUse image : kernel.images()) {
+					addColourTarget(images, image.name());
+				}
+			}
+		}
+		for (ResolvedProgram program : this.dimension.programs()) {
+			if (!program.runs()) {
+				continue;
+			}
+			for (StageFile file : program.stages()) {
+				var m = COLORIMG_USE.matcher(COMMENT.matcher(file.text()).replaceAll(" "));
+				while (m.find()) {
+					images.add(Integer.parseInt(m.group(1)));
+				}
+			}
+		}
+		return images;
 	}
 
 	/**

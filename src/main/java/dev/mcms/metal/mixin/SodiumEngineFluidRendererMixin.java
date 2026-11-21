@@ -43,11 +43,9 @@ abstract class SodiumEngineFluidRendererMixin {
 		}
 	}
 
-	@Inject(method = "render", at = @At("TAIL"))
+	@Inject(method = "render", at = @At("RETURN"))
 	private void mcmsMetal$fluidContextEnd(LevelSlice slice, BlockState state, FluidState fluidState, BlockPos pos,
 		BlockPos origin, TranslucentGeometryCollector collector, ChunkBuildBuffers buffers, CallbackInfo ci) {
-		if (TerrainEngine.active()) {
-			TerrainContext.end();
-		}
+		TerrainContext.end();
 	}
 }

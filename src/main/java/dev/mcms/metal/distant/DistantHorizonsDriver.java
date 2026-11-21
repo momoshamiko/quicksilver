@@ -86,6 +86,9 @@ public final class DistantHorizonsDriver {
 			return false;
 		}
 		var proxy = DhApi.Delayed.renderProxy;
+		if (proxy == null) {
+			return false;
+		}
 		boolean previousDefer = proxy.getDeferTransparentRendering();
 		proxy.setDeferTransparentRendering(true);
 		engineCall = true;
@@ -127,8 +130,12 @@ public final class DistantHorizonsDriver {
 	 * of Sodium's terrain setup, so DH's refusal or a throw from DH is logged once and the frame goes on.
 	 */
 	public static void clearRenderData() {
+		var proxy = DhApi.Delayed.renderProxy;
+		if (proxy == null) {
+			return;
+		}
 		try {
-			var result = DhApi.Delayed.renderProxy.clearRenderDataCache();
+			var result = proxy.clearRenderDataCache();
 			if (!result.success && !clearFailureLogged) {
 				clearFailureLogged = true;
 				LOG.info("[mcms-shaders] Distant Horizons kept its render data ({}); LOD colours built before keep their shade", result.message);

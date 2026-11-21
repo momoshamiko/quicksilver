@@ -258,9 +258,13 @@ final class BuiltinCoverageTest {
 			((Mapping.Mapped) table.map(call("barrier", "void", List.of(), List.of()), BuiltinTable.Stage.COMPUTE))
 				.msl());
 		assertEquals("threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_texture | mem_flags::mem_threadgroup)",
-			((Mapping.Mapped) map(call("memoryBarrier", "void", List.of(), List.of()))).msl());
+			((Mapping.Mapped) table.map(call("memoryBarrier", "void", List.of(), List.of()), BuiltinTable.Stage.COMPUTE)).msl());
 		assertEquals("threadgroup_barrier(mem_flags::mem_texture)",
-			((Mapping.Mapped) map(call("memoryBarrierImage", "void", List.of(), List.of()))).msl());
+			((Mapping.Mapped) table.map(call("memoryBarrierImage", "void", List.of(), List.of()), BuiltinTable.Stage.COMPUTE)).msl());
+		assertEquals("((void)0)",
+			((Mapping.Mapped) table.map(call("memoryBarrier", "void", List.of(), List.of()), BuiltinTable.Stage.FRAGMENT)).msl());
+		assertEquals("((void)0)",
+			((Mapping.Mapped) table.map(call("memoryBarrierImage", "void", List.of(), List.of()), BuiltinTable.Stage.VERTEX)).msl());
 	}
 
 	@Test

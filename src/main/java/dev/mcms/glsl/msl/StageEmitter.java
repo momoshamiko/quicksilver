@@ -558,20 +558,22 @@ final class StageEmitter {
 			for (int i = 0; i < def.proto().params().size(); i++) {
 				Param p = def.proto().params().get(i);
 				VariableSymbol v = sema.variableOf(p);
-				if (v == null || p.name() == null) {
+				FunctionOverload.Parameter fp = overload.params().get(i);
+				GlslType paramType = v != null ? v.type() : fp.type();
+				if (paramType.isVoid()) {
 					continue;
 				}
 				if (params.length() > 0) {
 					params.append(", ");
 				}
-				String ref = variableRef(v);
-				String type = MslTypes.value(v.type());
-				if (overload.params().get(i).writes()) {
+				String ref = (v != null && p.name() != null) ? variableRef(v) : "_qs_p" + i;
+				String type = MslTypes.value(paramType);
+				if (fp.writes()) {
 					params.append("thread ").append(type).append(" &").append(ref);
 				} else {
 					params.append(type).append(' ').append(ref);
 				}
-				if (v.type() instanceof SamplerType) {
+				if (paramType instanceof SamplerType) {
 					params.append(", sampler smp_").append(ref);
 					params.append(", sampler smpi_").append(ref);
 				}

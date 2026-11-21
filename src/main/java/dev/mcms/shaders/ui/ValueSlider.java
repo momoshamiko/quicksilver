@@ -50,10 +50,13 @@ final class ValueSlider extends AbstractSliderButton {
 
 	@Override
 	protected void applyValue() {
-		index = (int) Math.round(value * (values.size() - 1));
-		value = fraction(values.size(), index);
-		updateMessage();
-		onChange.accept(values.get(index));
+		int next = (int) Math.round(value * (values.size() - 1));
+		value = fraction(values.size(), next);
+		if (next != index) {
+			index = next;
+			updateMessage();
+			onChange.accept(values.get(index));
+		}
 	}
 
 	@Override

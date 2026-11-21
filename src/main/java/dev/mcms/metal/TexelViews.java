@@ -55,7 +55,11 @@ final class TexelViews {
 		Key key = new Key(buffer, buffer.handle, slice.offset(), slice.length(), pixelFormat);
 		View v = views.get(key);
 		if (v == null) {
-			v = new View(Native.textureBuffer(encoder.ctx, buffer.handle, pixelFormat, slice.offset(), slice.length(), blockSize));
+			long handle = Native.textureBuffer(encoder.ctx, buffer.handle, pixelFormat, slice.offset(), slice.length(), blockSize);
+			if (handle == 0) {
+				return 0;
+			}
+			v = new View(handle);
 			views.put(key, v);
 			created++;
 		} else {
@@ -63,5 +67,14 @@ final class TexelViews {
 		}
 		v.lastSubmit = submit;
 		return v.handle;
+	}
+
+	/** Releases all cached texel views when the device shuts down so no Metal textures stay retained across lifecycles. */
+	static void clear(MetalEncoder encoder) {
+		for (View v : views.values()) {
+			encoder.releaseLater(v.handle);
+		}
+		views.clear();
+		lastSweep = -1;
 	}
 }

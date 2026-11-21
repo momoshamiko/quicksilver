@@ -37,12 +37,21 @@ public final class MetalBridge {
 		return Native.lookup();
 	}
 
+	/** Current submit counter of a Metal encoder (or -1 for non-Metal/stub encoders); advances only on {@code submit()}. */
+	public static long submitIndex(@Nullable Object encoder) {
+		return encoder instanceof MetalEncoder metal ? metal.submitIndex() : -1L;
+	}
+
+	/** Headless context created by {@link #createHeadlessContext()}, used as fallback for {@link #currentContext()} in headless tests. */
+	private static volatile long headlessContext;
+
 	/** A Metal context without a window, for headless checks (no game, no surface). */
 	public static long createHeadlessContext() {
 		try (MemoryStack stack = MemoryStack.stackPush()) {
 			long name = stack.nmalloc(1, 256), err = stack.nmalloc(1, 1024);
 			long ctx = Native.create(name, 256, err, 1024);
 			if (ctx == 0) throw new IllegalStateException("Metal unavailable: " + MemoryUtil.memUTF8(err));
+			headlessContext = ctx;
 			return ctx;
 		}
 	}
@@ -190,13 +199,17 @@ public final class MetalBridge {
 		return ((MetalBuffer) buffer).handle;
 	}
 
-	/** The native context of the current Metal device (the one the game renders on; tests draw on it). */
+	/** The native context of the current Metal device (the one the game renders on; headless tests fall back to their headless context). */
 	public static long currentContext() {
 		MetalDevice device = MetalDevice.current;
-		if (device == null) {
-			throw new IllegalStateException("no Metal device is current");
+		if (device != null) {
+			return device.ctx();
 		}
-		return device.ctx();
+		long headless = headlessContext;
+		if (headless != 0L) {
+			return headless;
+		}
+		throw new IllegalStateException("no Metal device is current");
 	}
 
 	/** A shared buffer of size bytes on ctx as the game's {@link GpuBuffer} (tests feed the delegate's uniform captures). */

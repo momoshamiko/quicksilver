@@ -42,6 +42,7 @@ public final class BufferSlots {
 		}
 	}
 
+	private static final Pattern COMMENTS = Pattern.compile("/\\*.*?\\*/|//[^\\n]*", Pattern.DOTALL);
 	private static final Pattern BLOCK = Pattern.compile("\\b(buffer|uniform)\\s+(\\w+)\\s*\\{");
 	/** A {@code binding = N} inside a layout qualifier in the text between the previous declaration and the keyword. */
 	private static final Pattern BINDING = Pattern.compile("\\blayout\\s*\\([^)]*\\bbinding\\s*=\\s*(\\d{1,6})");
@@ -56,7 +57,7 @@ public final class BufferSlots {
 	 * {@code limit} indices (0 to limit - 1). A block declared twice (the same name) takes one slot, as before E6.
 	 */
 	public static Assignment assign(CharSequence source, int limit) {
-		String text = source.toString();
+		String text = COMMENTS.matcher(source).replaceAll(" ");
 		List<Decl> decls = new ArrayList<>();
 		Set<String> names = new HashSet<>();
 		Matcher m = BLOCK.matcher(text);

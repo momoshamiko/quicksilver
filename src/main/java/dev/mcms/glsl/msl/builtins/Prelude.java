@@ -248,26 +248,30 @@ public final class Prelude {
 			// no seq_cst, this is relaxed and the engine's barriers (mem_device/mem_threadgroup) order the memory.
 			static inline int atomicCompSwap(device atomic_int *p, int compare, int data) {
 				int expected = compare;
-				atomic_compare_exchange_weak_explicit(p, &expected, data,
-					memory_order_relaxed, memory_order_relaxed);
+				while (!atomic_compare_exchange_weak_explicit(p, &expected, data,
+						memory_order_relaxed, memory_order_relaxed) && expected == compare) {
+				}
 				return expected;
 			}
 			static inline uint atomicCompSwap(device atomic_uint *p, uint compare, uint data) {
 				uint expected = compare;
-				atomic_compare_exchange_weak_explicit(p, &expected, data,
-					memory_order_relaxed, memory_order_relaxed);
+				while (!atomic_compare_exchange_weak_explicit(p, &expected, data,
+						memory_order_relaxed, memory_order_relaxed) && expected == compare) {
+				}
 				return expected;
 			}
 			static inline int atomicCompSwap(threadgroup atomic_int *p, int compare, int data) {
 				int expected = compare;
-				atomic_compare_exchange_weak_explicit(p, &expected, data,
-					memory_order_relaxed, memory_order_relaxed);
+				while (!atomic_compare_exchange_weak_explicit(p, &expected, data,
+						memory_order_relaxed, memory_order_relaxed) && expected == compare) {
+				}
 				return expected;
 			}
 			static inline uint atomicCompSwap(threadgroup atomic_uint *p, uint compare, uint data) {
 				uint expected = compare;
-				atomic_compare_exchange_weak_explicit(p, &expected, data,
-					memory_order_relaxed, memory_order_relaxed);
+				while (!atomic_compare_exchange_weak_explicit(p, &expected, data,
+						memory_order_relaxed, memory_order_relaxed) && expected == compare) {
+				}
 				return expected;
 			}""");
 		m.put("textureSize", """
@@ -357,27 +361,49 @@ public final class Prelude {
 			// atomics).
 			template <typename T, access A>
 			static inline T imageCompSwap(texture2d<T, A> t, uint2 c, T compare, T data) {
+				if (c.x >= t.get_width() || c.y >= t.get_height()) return T(0);
 				vec<T, 4> expected(compare);
-				t.atomic_compare_exchange_weak(c, &expected, vec<T, 4>(data));
+				while (!t.atomic_compare_exchange_weak(c, &expected, vec<T, 4>(data)) && expected.x == compare) {
+				}
 				return expected.x;
 			}
 			template <typename T, access A>
 			static inline T imageCompSwap(texture3d<T, A> t, uint3 c, T compare, T data) {
+				if (c.x >= t.get_width() || c.y >= t.get_height() || c.z >= t.get_depth()) return T(0);
 				vec<T, 4> expected(compare);
-				t.atomic_compare_exchange_weak(c, &expected, vec<T, 4>(data));
+				while (!t.atomic_compare_exchange_weak(c, &expected, vec<T, 4>(data)) && expected.x == compare) {
+				}
 				return expected.x;
 			}
 			template <typename T, access A>
 			static inline T imageCompSwap(texture2d_array<T, A> t, uint2 c, uint layer, T compare, T data) {
+				if (c.x >= t.get_width() || c.y >= t.get_height() || layer >= t.get_array_size()) return T(0);
 				vec<T, 4> expected(compare);
-				t.atomic_compare_exchange_weak(c, layer, &expected, vec<T, 4>(data));
+				while (!t.atomic_compare_exchange_weak(c, layer, &expected, vec<T, 4>(data)) && expected.x == compare) {
+				}
 				return expected.x;
 			}
 			template <typename T, access A>
 			static inline T imageCompSwap(texture_buffer<T, A> t, uint c, T compare, T data) {
+				if (c >= t.get_width()) return T(0);
 				vec<T, 4> expected(compare);
-				t.atomic_compare_exchange_weak(c, &expected, vec<T, 4>(data));
+				while (!t.atomic_compare_exchange_weak(c, &expected, vec<T, 4>(data)) && expected.x == compare) {
+				}
 				return expected.x;
+			}""");
+		m.put("matToVec", """
+			// GLSL 4.60 5.4.2 matrix-to-vector constructor: takes N components in column-major order while evaluating
+			// the matrix expression once (safe for side-effecting calls and short-circuiting branches).
+			template <int N, typename T, int C, int R>
+			static inline vec<T, N> matToVec(matrix<T, C, R> m) {
+				vec<T, N> r(0);
+				int k = 0;
+				for (int c = 0; c < C && k < N; c++) {
+					for (int row = 0; row < R && k < N; row++) {
+						r[k++] = m[c][row];
+					}
+				}
+				return r;
 			}""");
 		return Map.copyOf(m);
 	}

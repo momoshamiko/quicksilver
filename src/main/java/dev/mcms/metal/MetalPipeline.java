@@ -133,7 +133,8 @@ final class MetalPipeline implements BackendRenderPipeline {
 	private static long compiled, translateNs, libraryNs, stateNs;
 
 	static synchronized Map<String, Object> compileStats() {
-		return Map.of("count", compiled, "translateMs", translateNs / 1e6, "libraryMs", libraryNs / 1e6, "stateMs", stateNs / 1e6, "mslCacheHits", mslHits, "mslCacheMismatches", mslMismatches);
+		return Map.of("count", compiled, "translateMs", translateNs / 1e6, "libraryMs", libraryNs / 1e6, "stateMs", stateNs / 1e6,
+			"mslCacheHits", mslHits.get(), "mslCacheMismatches", mslMismatches.get());
 	}
 
 	static @Nullable MetalPipeline compile(MetalEncoder encoder, CreateInfo info) {
@@ -182,10 +183,18 @@ final class MetalPipeline implements BackendRenderPipeline {
 			if (depth == null) {
 				if (GPU_COUNT) Native.gpuCountLabel(info.name() + " (no depth)");
 				withoutDepth = pipelineNewCounted(ctx, vlib, vname, flib, fname, describe(stack, info, false), err, 4096);
-				if (withoutDepth == 0) throw new IllegalStateException(info.name() + ": " + MemoryUtil.memUTF8(err));
+				if (withoutDepth == 0) {
+					Native.release(withDepth);
+					throw new IllegalStateException(info.name() + ": " + MemoryUtil.memUTF8(err));
+				}
 			}
 			int compare = depth == null ? 7 : MetalConst.compare(depth.depthTest());
 			long depthState = Native.depthStateNew(ctx, compare, depth != null && depth.writeDepth() ? 1 : 0);
+			if (depthState == 0) {
+				Native.release(withDepth);
+				if (withoutDepth != 0) Native.release(withoutDepth);
+				throw new IllegalStateException(info.name() + ": couldn't create Metal depth stencil state");
+			}
 			MetalPipeline pipeline = new MetalPipeline(encoder, withDepth, withoutDepth, depthState, info, vslots, fslots);
 			return pipeline;
 		} finally {
@@ -289,7 +298,7 @@ final class MetalPipeline implements BackendRenderPipeline {
 	private static final String MSL_MODE = System.getProperty("mcms.metal.mslCache", "true");
 	/** true: use the cache; verify: use it and also translate every hit, counting any difference (mslCacheMismatches); false: off. */
 	private static final boolean MSL_CACHE = MSL_MODE.equals("true") || MSL_MODE.equals("verify");
-	static int mslMismatches;
+	static final java.util.concurrent.atomic.AtomicInteger mslMismatches = new java.util.concurrent.atomic.AtomicInteger();
 	private static final Path MSL_DIR = MSL_CACHE ? (System.getProperty("mcms.metal.mslCacheDir") != null
 		? Path.of(System.getProperty("mcms.metal.mslCacheDir"))
 		: net.fabricmc.loader.api.FabricLoader.getInstance().getGameDir().resolve("quicksilver").resolve("msl-cache")) : null;
@@ -309,7 +318,8 @@ final class MetalPipeline implements BackendRenderPipeline {
 			throw new IllegalStateException("mslCache salt", e);
 		}
 	}
-	static int mslHits, mslMisses;
+	static final java.util.concurrent.atomic.AtomicInteger mslHits = new java.util.concurrent.atomic.AtomicInteger();
+	static final java.util.concurrent.atomic.AtomicInteger mslMisses = new java.util.concurrent.atomic.AtomicInteger();
 
 	/** points: the pipeline draws points, so its vertex function may write point_size (ignored for fragment modules). */
 	private static Translated translate(SpvModule module, int uniformCount, int[] samplerSlots, boolean points) {
@@ -331,21 +341,29 @@ final class MetalPipeline implements BackendRenderPipeline {
 			String text = java.nio.file.Files.readString(file);
 			int nl = text.indexOf('\n');
 			if (nl > 0) {
-				mslHits++;
+				mslHits.incrementAndGet();
 				Translated hit = new Translated(text.substring(nl + 1), text.substring(0, nl));
-				if (MSL_MODE.equals("verify") && !hit.equals(translateNow(module, uniformCount, samplerSlots, points))) mslMismatches++;
+				if (MSL_MODE.equals("verify") && !hit.equals(translateNow(module, uniformCount, samplerSlots, points))) mslMismatches.incrementAndGet();
 				return hit;
 			}
 		} catch (java.io.IOException missing) {
 			// not cached yet
 		}
 		Translated t = translateNow(module, uniformCount, samplerSlots, points);
-		mslMisses++;
+		mslMisses.incrementAndGet();
 		try {
 			java.nio.file.Files.createDirectories(MSL_DIR);
 			java.nio.file.Path tmp = java.nio.file.Files.createTempFile(MSL_DIR, key, ".tmp");
-			java.nio.file.Files.writeString(tmp, t.entry + "\n" + t.msl);
-			java.nio.file.Files.move(tmp, file, java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+			try {
+				java.nio.file.Files.writeString(tmp, t.entry + "\n" + t.msl);
+				try {
+					java.nio.file.Files.move(tmp, file, java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+				} catch (java.nio.file.AtomicMoveNotSupportedException fallback) {
+					java.nio.file.Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+				}
+			} finally {
+				java.nio.file.Files.deleteIfExists(tmp);
+			}
 		} catch (java.io.IOException e) {
 			// a cache that can't be written is just a slower launch
 		}
@@ -355,7 +373,7 @@ final class MetalPipeline implements BackendRenderPipeline {
 	private static Translated translateNow(SpvModule module, int uniformCount, int[] samplerSlots, boolean points) {
 		boolean vertex = module.type() == ShaderType.VERTEX;
 		int model = vertex ? Spv.SpvExecutionModelVertex : Spv.SpvExecutionModelFragment;
-		IntBuffer spirv = module.spv().asIntBuffer();
+		IntBuffer spirv = module.spv().duplicate().order(java.nio.ByteOrder.LITTLE_ENDIAN).asIntBuffer();
 		try (MemoryStack stack = MemoryStack.stackPush()) {
 			PointerBuffer out = stack.callocPointer(1);
 			check(0, spvc_context_create(out), "context");

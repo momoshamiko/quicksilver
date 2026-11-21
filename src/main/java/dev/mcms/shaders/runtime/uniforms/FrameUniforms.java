@@ -878,6 +878,7 @@ public final class FrameUniforms {
 	 */
 	public void setAlphaTestRef(float ref) {
 		this.alphaTestRef = ref;
+		putFloat("alphaTestRef", ref);
 	}
 
 	/**

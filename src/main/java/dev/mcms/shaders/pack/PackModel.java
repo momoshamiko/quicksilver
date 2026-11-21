@@ -106,9 +106,24 @@ public record PackModel(
 		return properties.requiredFeatures().stream().filter(f -> !macros.offers(f)).toList();
 	}
 
+	/** Lightweight pack metadata for the options screen (skips shader preprocessing, id maps, and texture decoding). */
+	public record OptionsData(
+		OptionCatalog options,
+		OptionValues values,
+		ShaderProperties properties,
+		ProfileSet profiles,
+		ScreenTree screens,
+		Lang lang) {
+	}
+
 	/** Loads a pack with the given option values (a values file's properties; empty for the defaults). */
 	public static PackModel load(PackSource pack, StandardMacros macros, String langId, Properties overrides) {
 		return new Loader(pack, macros, langId, overrides).run();
+	}
+
+	/** Loads only options, properties, profiles, screens, and language labels (fast path for the options screen). */
+	public static OptionsData loadOptions(PackSource pack, StandardMacros macros, String langId, Properties overrides) {
+		return new Loader(pack, macros, langId, overrides).runOptions();
 	}
 
 	/** One file of a dimension folder that is a stage of a documented program. */
@@ -235,6 +250,23 @@ public record PackModel(
 			this.macros = macros;
 			this.langId = langId;
 			this.overrides = overrides == null ? new Properties() : overrides;
+		}
+
+		OptionsData runOptions() {
+			Set<String> top = topFolders(pack);
+			glslMacros = macros.predefined();
+			DimensionRules dimRules = dimensionRules();
+			List<String> scanFolders = new ArrayList<>(List.of(""));
+			for (String f : top) {
+				if (f.startsWith("world") || dimRules.folderDimensions().containsKey(f)) scanFolders.add(f);
+			}
+			OptionCatalog catalog = OptionDiscovery.scan(pack, scanFolders);
+			OptionValues values = OptionValues.of(catalog, overrides);
+			ShaderProperties props = shaderProperties(catalog, values);
+			ProfileSet profiles = ProfileSet.parse(props.profiles(), catalog);
+			ScreenTree screens = ScreenTree.parse(props.screens(), catalog);
+			Lang lang = Lang.select(pack, langId);
+			return new OptionsData(catalog, values, props, profiles, screens, lang);
 		}
 
 		PackModel run() {

@@ -170,6 +170,9 @@ public final class EngineRedirector implements MetalHooks.PassRedirector {
 			return redirectOf(GbufferPhase.TRANSLUCENT, true);
 		}
 		String label = descriptor.label().get();
+		if (label == null) {
+			return null;
+		}
 		if (DISTANT_TERRAIN_PASS.equals(label)) {
 			// DH's own terrain pass draws into the engine's DISTANT phase: its colour is DH's, the pack's pictures take it. Without
 			// a set that serves DISTANT, the pass is DH's own (its colour and its depth), as before the engine served DH.

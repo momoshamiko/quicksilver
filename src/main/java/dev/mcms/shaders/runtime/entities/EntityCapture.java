@@ -279,7 +279,10 @@ public final class EntityCapture {
 	 * item id waits on the state until its submit.
 	 */
 	public static void itemState(Object state, ItemStack stack) {
+		ids();
 		if (stack.isEmpty()) {
+			// Clear any stale item id on a recycled ItemStackRenderState instance.
+			ITEM_STATES.put(state, Integer.MIN_VALUE);
 			return;
 		}
 		ITEM_STATES.put(state, itemOf(stack));
@@ -292,6 +295,7 @@ public final class EntityCapture {
 	 * not name); the entity and block-entity ids of an item read 0.
 	 */
 	public static void itemSubmit(Object state) {
+		ids();
 		int item = ITEM_STATES.get(state, Integer.MIN_VALUE);
 		setPending(0, 0, item == Integer.MIN_VALUE ? DEFAULTS[2] : item);
 	}

@@ -5,8 +5,11 @@
 	"name": "Quicksilver",
 	"description": "A native Metal backend for Minecraft's renderpearl layer (the MC Metal Shaders project), cut from mcopt 0.3.0-alpha.2, with its own engine for OptiFine and Iris shader packs, and mixins that let Sodium draw and Distant Horizons take its Vulkan paths on it. Settings: Options, Video Settings, Quicksilver (with Sodium). Properties: -Dmcms.metal.* (README.md).",
 	"license": "Apache-2.0",
+	"authors": ["momoshamiko"],
 	"contact": {
-		"sources": "https://github.com/momoshamiko/quicksilver"
+		"homepage": "https://modrinth.com/mod/quicksilver-momoshamiko",
+		"sources": "https://github.com/momoshamiko/quicksilver",
+		"issues": "https://github.com/momoshamiko/quicksilver/issues"
 	},
 	"icon": "assets/quicksilver/icon.png",
 	"environment": "client",

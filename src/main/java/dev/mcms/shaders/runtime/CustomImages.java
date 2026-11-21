@@ -37,7 +37,8 @@ public final class CustomImages {
 
 	/** No images: the set of a pack without {@code image.} keys. */
 	public static final CustomImages NONE = new CustomImages(List.of(), new String[0], new String[0], new long[0],
-		new int[0], new int[0], new int[0], new boolean[0], new boolean[0], new int[0], new long[KERNEL_SLOTS]);
+		new int[0], new int[0], new int[0], new boolean[0], new boolean[0], new boolean[0], new int[0],
+		new long[KERNEL_SLOTS]);
 
 	private final List<ShaderProperties.ImageBinding> definitions;
 	private final String[] imageNames;
@@ -48,13 +49,15 @@ public final class CustomImages {
 	private final int[] depths;
 	private final boolean[] relative;
 	private final boolean[] clearEachFrame;
+	/** True once a persistent ({@code !clearEachFrame}) image has been zero-initialized on its first frame. */
+	private final boolean[] clearedOnce;
 	private final int[] kinds;
-	/** The clear kernel of each kind slot ({@link #kernelSlot}); 0 where no image of the kind is cleared. */
+	/** The clear kernel of each kind slot ({@link #kernelSlot}); 0 where no image of the kind exists. */
 	private final long[] clearKernels;
 
 	private CustomImages(List<ShaderProperties.ImageBinding> definitions, String[] imageNames, String[] samplerNames,
 			long[] textures, int[] widths, int[] heights, int[] depths, boolean[] relative, boolean[] clearEachFrame,
-			int[] kinds, long[] clearKernels) {
+			boolean[] clearedOnce, int[] kinds, long[] clearKernels) {
 		this.definitions = definitions;
 		this.imageNames = imageNames;
 		this.samplerNames = samplerNames;
@@ -64,6 +67,7 @@ public final class CustomImages {
 		this.depths = depths;
 		this.relative = relative;
 		this.clearEachFrame = clearEachFrame;
+		this.clearedOnce = clearedOnce;
 		this.kinds = kinds;
 		this.clearKernels = clearKernels;
 	}
@@ -134,6 +138,7 @@ public final class CustomImages {
 		int[] depths = new int[n];
 		boolean[] relative = new boolean[n];
 		boolean[] clear = new boolean[n];
+		boolean[] clearedOnce = new boolean[n];
 		int[] kinds = new int[n];
 		boolean[] kept = new boolean[n];
 		// The kernels are copied, not taken: a failure below leaves the previous object whole (it owns them still).
@@ -156,6 +161,7 @@ public final class CustomImages {
 				if (reused != 0L) {
 					textures[i] = reused;
 					kept[i] = true;
+					clearedOnce[i] = previous.clearedOnce[i];
 				} else {
 					textures[i] = device.texture(ctx, format, volume ? ShaderNative.TYPE_3D : ShaderNative.TYPE_2D, widths[i],
 						heights[i], depths[i]);
@@ -164,7 +170,7 @@ public final class CustomImages {
 							heights[i], depths[i], d.internalFormat());
 					}
 				}
-				if (clear[i] && textures[i] != 0L && kernels[kernelSlot(kinds[i])] == 0L) {
+				if (textures[i] != 0L && kernels[kernelSlot(kinds[i])] == 0L) {
 					kernels[kernelSlot(kinds[i])] = device.clearPipeline(ctx, kinds[i]);
 				}
 			}
@@ -186,7 +192,7 @@ public final class CustomImages {
 			previous.disown(kept);  // the result owns the kept textures and every kernel now
 		}
 		return new CustomImages(definitions, imageNames, samplerNames, textures, widths, heights, depths, relative, clear,
-			kinds, kernels);
+			clearedOnce, kinds, kernels);
 	}
 
 	/** The texture a fixed-size image of this object keeps for the same definition, or 0 when none applies. */
@@ -286,8 +292,27 @@ public final class CustomImages {
 	}
 
 	/**
-	 * Zeroes every {@code clearEachFrame} image on the frame's compute encoder (the frame's head, before the shadow pass).
-	 * Allocation-free: the dispatch counts are arithmetic on sizes stored at creation.
+	 * Zero-initializes any newly created persistent ({@code !clearEachFrame}) image once before the frame's {@code setup}
+	 * and {@code begin} kernels run, so packs never read uninitialized GPU memory. Kept fixed-size images keep their
+	 * initialized state across resizes. Allocation-free.
+	 */
+	public void clearInitial(long enc) {
+		for (int i = 0; i < this.textures.length; i++) {
+			if (this.clearEachFrame[i] || this.clearedOnce[i]) {
+				continue;
+			}
+			long pipeline = this.clearKernels[kernelSlot(this.kinds[i])];
+			if (this.textures[i] == 0L || pipeline == 0L) {
+				continue;
+			}
+			this.clearedOnce[i] = true;
+			dispatchClear(enc, i, pipeline);
+		}
+	}
+
+	/**
+	 * Zeroes every {@code clearEachFrame} image on the frame's compute encoder (after {@code setup}/{@code begin}, before
+	 * the shadow pass). Allocation-free: the dispatch counts are arithmetic on sizes stored at creation.
 	 */
 	public void clearEachFrame(long enc) {
 		for (int i = 0; i < this.textures.length; i++) {
@@ -295,15 +320,19 @@ public final class CustomImages {
 			if (!this.clearEachFrame[i] || this.textures[i] == 0L || pipeline == 0L) {
 				continue;
 			}
-			boolean volume = (this.kinds[i] & VOLUME) != 0;
-			int wgX = volume ? 4 : 8;
-			int wgY = volume ? 4 : 8;
-			int wgZ = volume ? 4 : 1;
-			MetalBridge.computePipeline(enc, pipeline);
-			MetalBridge.computeTexture(enc, 0, this.textures[i]);
-			MetalBridge.computeDispatch(enc, (this.widths[i] + wgX - 1) / wgX, (this.heights[i] + wgY - 1) / wgY,
-				volume ? (this.depths[i] + wgZ - 1) / wgZ : 1, wgX, wgY, wgZ);
+			dispatchClear(enc, i, pipeline);
 		}
+	}
+
+	private void dispatchClear(long enc, int i, long pipeline) {
+		boolean volume = (this.kinds[i] & VOLUME) != 0;
+		int wgX = volume ? 4 : 8;
+		int wgY = volume ? 4 : 8;
+		int wgZ = volume ? 4 : 1;
+		MetalBridge.computePipeline(enc, pipeline);
+		MetalBridge.computeTexture(enc, 0, this.textures[i]);
+		MetalBridge.computeDispatch(enc, (this.widths[i] + wgX - 1) / wgX, (this.heights[i] + wgY - 1) / wgY,
+			volume ? (this.depths[i] + wgZ - 1) / wgZ : 1, wgX, wgY, wgZ);
 	}
 
 	/** Releases the textures and the clear kernels (the targets that own them are being rebuilt or closed). */

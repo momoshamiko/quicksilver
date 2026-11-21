@@ -36,9 +36,14 @@ abstract class IndexedPackSource implements PackSource {
 	private final Map<String, Optional<String>> texts = new ConcurrentHashMap<>();
 
 	IndexedPackSource(String name, Map<String, Boolean> rawEntries) throws IOException {
+		this(name, rawEntries, null);
+	}
+
+	IndexedPackSource(String name, Map<String, Boolean> rawEntries, AutoCloseable closeOnFailure) throws IOException {
 		this.name = name;
 		for (Map.Entry<String, Boolean> e : rawEntries.entrySet()) {
 			String p = e.getKey();
+			if (isMacOsMetadata(p)) continue;
 			entries.put(p, e.getValue());
 			byLowerCase.computeIfAbsent(p.toLowerCase(Locale.ROOT), k -> new TreeSet<>()).add(p);
 			// Parent folders exist even when the zip has no entries for them.
@@ -50,7 +55,37 @@ abstract class IndexedPackSource implements PackSource {
 				slash = dir.lastIndexOf('/');
 			}
 		}
-		this.shadersPrefix = findShadersRoot();
+		try {
+			this.shadersPrefix = findShadersRoot();
+		} catch (IOException | RuntimeException ex) {
+			if (closeOnFailure != null) {
+				try {
+					closeOnFailure.close();
+				} catch (Exception suppressed) {
+					ex.addSuppressed(suppressed);
+				}
+			}
+			throw ex;
+		}
+	}
+
+	/** Skips macOS Finder archive junk ({@code __MACOSX/} and {@code ._*} AppleDouble files) so rezipped packs open cleanly. */
+	private static boolean isMacOsMetadata(String path) {
+		if (path.equals("__MACOSX") || path.startsWith("__MACOSX/")) return true;
+		int start = 0;
+		while (start < path.length()) {
+			int slash = path.indexOf('/', start);
+			int end = slash < 0 ? path.length() : slash;
+			if (end - start >= 2 && path.charAt(start) == '.' && path.charAt(start + 1) == '_') {
+				return true;
+			}
+			if (end - start == 8 && path.regionMatches(start, "__MACOSX", 0, 8)) {
+				return true;
+			}
+			if (slash < 0) break;
+			start = slash + 1;
+		}
+		return false;
 	}
 
 	/** Reads the raw bytes of an entry given its pack-root-relative path; null when it has no data. */

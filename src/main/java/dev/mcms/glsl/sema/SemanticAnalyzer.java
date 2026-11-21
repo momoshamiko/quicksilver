@@ -374,7 +374,7 @@ public final class SemanticAnalyzer {
 				if (t instanceof ArrayType a && a.size() == null) {
 					t = new ArrayType(a.element(), list.items().size());
 				}
-				initializerList(list, t);
+				value = initializerList(list, t);
 			} else if (d.initializer() != null) {
 				ExprInfo info = expr(d.initializer());
 				if (t instanceof ArrayType a && a.size() == null && info.type() instanceof ArrayType from) {
@@ -1360,10 +1360,14 @@ public final class SemanticAnalyzer {
 
 	private ExprInfo sequence(SequenceExpr s) {
 		ExprInfo last = ExprInfo.ERROR;
+		boolean allConst = !s.items().isEmpty();
 		for (Expr item : s.items()) {
 			last = expr(item);
+			if (last.value() == null) {
+				allConst = false;
+			}
 		}
-		return info(s, last.type(), false, last.value());
+		return info(s, last.type(), false, allConst ? last.value() : null);
 	}
 
 	private ExprInfo index(IndexExpr i) {
@@ -2125,65 +2129,106 @@ public final class SemanticAnalyzer {
 	/**
 	 * A brace initializer (GLSL 4.20): its items fill the components, columns, elements or fields of the declared type,
 	 * in order, and must match the count exactly (the array size is already fixed by the caller when unsized).
+	 * Returns the folded {@link ConstValue} when every item is a constant expression, else null.
 	 */
-	private void initializerList(InitializerList list, GlslType type) {
+	private ConstValue initializerList(InitializerList list, GlslType type) {
 		if (version < 420) {
 			leniency(list.pos(), "initializer-list", "brace-enclosed initializer lists need GLSL 4.20");
 		}
-		exprs.put(list, new ExprInfo(type, false, null));
 		List<Expr> items = list.items();
+		ConstValue folded = null;
 		switch (type) {
 			case ArrayType a -> {
 				if (a.size() != null && a.size() != items.size()) {
 					error(list.pos(), "initializer-count", "array of " + a.size() + " needs " + a.size()
 							+ " initializers, got " + items.size());
-					return;
-				}
-				for (Expr item : items) {
-					initializerItem(item, a.element());
+				} else {
+					ConstValue[] els = new ConstValue[items.size()];
+					boolean allConst = true;
+					for (int i = 0; i < items.size(); i++) {
+						ConstValue v = initializerItem(items.get(i), a.element());
+						if (v == null) {
+							allConst = false;
+						} else {
+							els[i] = v;
+						}
+					}
+					if (allConst) {
+						folded = ConstValue.array(a, els);
+					}
 				}
 			}
-			case VectorType v -> countAndItems(list, items, v.size(), ScalarType.of(v.component()), v.toString());
-			case MatrixType m -> countAndItems(list, items, m.cols(), m.columnType(), m.toString());
+			case VectorType v -> {
+				ConstValue[] parts = countAndItems(list, items, v.size(), ScalarType.of(v.component()), v.toString());
+				if (parts != null) {
+					folded = ConstValue.vector(v, parts);
+				}
+			}
+			case MatrixType m -> {
+				ConstValue[] cols = countAndItems(list, items, m.cols(), m.columnType(), m.toString());
+				if (cols != null) {
+					folded = ConstValue.matrix(m, cols);
+				}
+			}
 			case StructType s -> {
 				if (s.fields().size() != items.size()) {
 					error(list.pos(), "initializer-count", s + " needs " + s.fields().size()
 							+ " initializers, got " + items.size());
-					return;
-				}
-				for (int i = 0; i < items.size(); i++) {
-					initializerItem(items.get(i), s.fields().get(i).type());
+				} else {
+					ConstValue[] fields = new ConstValue[items.size()];
+					boolean allConst = true;
+					for (int i = 0; i < items.size(); i++) {
+						ConstValue v = initializerItem(items.get(i), s.fields().get(i).type());
+						if (v == null) {
+							allConst = false;
+						} else {
+							fields[i] = v;
+						}
+					}
+					if (allConst) {
+						folded = ConstValue.struct(s, fields);
+					}
 				}
 			}
 			default -> error(list.pos(), "initializer-list-type",
 					"a brace initializer needs an array, vector, matrix or struct, not " + type);
 		}
+		exprs.put(list, new ExprInfo(type, false, folded));
+		return folded;
 	}
 
-	private void countAndItems(InitializerList list, List<Expr> items, int count, GlslType itemType, String name) {
+	private ConstValue[] countAndItems(InitializerList list, List<Expr> items, int count, GlslType itemType, String name) {
 		if (items.size() != count) {
 			error(list.pos(), "initializer-count", name + " needs " + count + " initializers, got " + items.size());
-			return;
+			return null;
 		}
-		for (Expr item : items) {
-			initializerItem(item, itemType);
+		ConstValue[] vals = new ConstValue[count];
+		boolean allConst = true;
+		for (int i = 0; i < items.size(); i++) {
+			ConstValue v = initializerItem(items.get(i), itemType);
+			if (v == null) {
+				allConst = false;
+			} else {
+				vals[i] = v;
+			}
 		}
+		return allConst ? vals : null;
 	}
 
-	private void initializerItem(Expr item, GlslType type) {
+	private ConstValue initializerItem(Expr item, GlslType type) {
 		if (item instanceof InitializerList nested) {
-			initializerList(nested, type);
-			return;
+			return initializerList(nested, type);
 		}
 		ExprInfo info = expr(item);
 		if (info.type().isError()) {
-			return;
+			return null;
 		}
 		if (!assignable(info.type(), type)) {
 			error(item.pos(), "initializer-type", "cannot initialize '" + type + "' from '" + info.type() + "'");
-			return;
+			return null;
 		}
 		recordIfDifferent(item, info.type(), type, Conversion.Site.INITIALIZER);
+		return info.value() == null ? null : info.value().implicitTo(type);
 	}
 
 	// --- result ---

@@ -197,7 +197,7 @@ public record ProgramDirectives(
 		}
 		if (fragment != null) {
 			writeSource = "default";
-			Matcher w = WRITES.matcher(fragment.text());
+			Matcher w = WRITES.matcher(stripLineCommentsOutsideBlocks(fragment.text()));
 			while (w.find()) {
 				writes.clear();
 				if (w.group(1) != null) {
@@ -235,6 +235,50 @@ public record ProgramDirectives(
 		}
 		return new ProgramDirectives(writes, writeSource, reads, constants, formats, clears, clearColors, mipmaps,
 			shadowFormats, legacy);
+	}
+
+	/**
+	 * Strips {@code // ...} single-line comments outside {@code /* ... *\/} block comments so commented-out directives
+	 * like {@code // /* DRAWBUFFERS:01 *\/} are ignored while real block-comment directives stay intact.
+	 */
+	private static String stripLineCommentsOutsideBlocks(String text) {
+		int n = text.length();
+		StringBuilder out = new StringBuilder(n);
+		boolean inBlock = false;
+		int i = 0;
+		while (i < n) {
+			char c = text.charAt(i);
+			if (inBlock) {
+				out.append(c);
+				if (c == '*' && i + 1 < n && text.charAt(i + 1) == '/') {
+					out.append('/');
+					i += 2;
+					inBlock = false;
+					continue;
+				}
+				i++;
+				continue;
+			}
+			if (c == '/' && i + 1 < n) {
+				char next = text.charAt(i + 1);
+				if (next == '*') {
+					out.append("/*");
+					i += 2;
+					inBlock = true;
+					continue;
+				}
+				if (next == '/') {
+					i += 2;
+					while (i < n && text.charAt(i) != '\n') {
+						i++;
+					}
+					continue;
+				}
+			}
+			out.append(c);
+			i++;
+		}
+		return out.toString();
 	}
 
 	/**

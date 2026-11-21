@@ -55,6 +55,7 @@ final class MetalRenderPass implements RenderPassBackend {
 	/** What the frontend set in the encoder besides uniforms, to put back after the pass is split (lazy clears). */
 	private final int[] scissor = new int[4];
 	private final @Nullable GpuBufferSlice[] vertexBuffers = new GpuBufferSlice[4];
+	private byte @Nullable [] pushedConstants;
 
 	private final boolean hasDepth;
 	/** Shaderpack runtime: draws this pass's pipelines with its own (see MetalHooks); null on the backend's own path. */
@@ -98,9 +99,10 @@ final class MetalRenderPass implements RenderPassBackend {
 		return s == 1f ? v : Math.max(0, (int) Math.floor(v * (double) s));
 	}
 
-	/** The high edge of a box edge scaled by s (rounded up), clamped to max. */
+	/** The high edge of a box edge scaled by s (rounded up), clamped to [0, max]. */
 	static int scaleHigh(int v, float s, int max) {
-		return Math.min(max, s == 1f ? v : (int) Math.ceil(v * (double) s));
+		int scaled = s == 1f ? v : (int) Math.ceil(v * (double) s);
+		return Math.max(0, Math.min(max, scaled));
 	}
 
 	@Override
@@ -165,6 +167,13 @@ final class MetalRenderPass implements RenderPassBackend {
 			if (vb != null) Native.vertexBuffer(this.enc, MetalConst.VERTEX_BUFFER_BASE + slot, this.encoder.use(vb.buffer()).handle, vb.offset());
 		}
 		if (this.indexHandle != 0) Native.index(this.enc, this.indexHandle, this.indexInt);
+		if (this.pushedConstants != null && this.pushedConstants.length > 0) {
+			try (org.lwjgl.system.MemoryStack stack = org.lwjgl.system.MemoryStack.stackPush()) {
+				ByteBuffer copy = stack.malloc(this.pushedConstants.length);
+				copy.put(this.pushedConstants).flip();
+				Native.bytes(this.enc, MetalConst.PUSH_CONSTANTS_INDEX, MemoryUtil.memAddress(copy), this.pushedConstants.length);
+			}
+		}
 		if (reapply) this.reapplyPipeline();
 	}
 
@@ -225,7 +234,17 @@ final class MetalRenderPass implements RenderPassBackend {
 
 	@Override
 	public void pushConstants(ByteBuffer value) {
-		Native.bytes(this.enc, MetalConst.PUSH_CONSTANTS_INDEX, MemoryUtil.memAddress(value), value.remaining());
+		int len = value.remaining();
+		Native.bytes(this.enc, MetalConst.PUSH_CONSTANTS_INDEX, MemoryUtil.memAddress(value), len);
+		if (len > 0 && len <= 4096) {
+			byte[] saved = new byte[len];
+			int pos = value.position();
+			value.get(saved);
+			value.position(pos);
+			this.pushedConstants = saved;
+		} else {
+			this.pushedConstants = null;
+		}
 		if (this.delegate != null) this.delegate.pushConstants(value);
 	}
 
@@ -241,13 +260,21 @@ final class MetalRenderPass implements RenderPassBackend {
 		this.scissorRaw(Math.min(x0, x1), Math.min(y0, y1), Math.max(0, x1 - x0), Math.max(0, y1 - y0));
 	}
 
-	/** Sets the scissor in the targets' pixels, and keeps it to put back after a split of the pass. */
+	/** Sets the scissor in the targets' pixels (clamped to target bounds), and keeps it to put back after a split of the pass. */
 	private void scissorRaw(int x, int y, int width, int height) {
-		Native.scissor(this.enc, x, y, width, height);
-		this.scissor[0] = x;
-		this.scissor[1] = y;
-		this.scissor[2] = width;
-		this.scissor[3] = height;
+		int tw = Math.max(0, this.targetWidth);
+		int th = Math.max(0, this.targetHeight);
+		int cx = Math.max(0, Math.min(x, tw));
+		int cy = Math.max(0, Math.min(y, th));
+		long x1 = Math.min((long) tw, (long) x + Math.max(0, width));
+		long y1 = Math.min((long) th, (long) y + Math.max(0, height));
+		int cw = (int) Math.max(0L, x1 - cx);
+		int ch = (int) Math.max(0L, y1 - cy);
+		Native.scissor(this.enc, cx, cy, cw, ch);
+		this.scissor[0] = cx;
+		this.scissor[1] = cy;
+		this.scissor[2] = cw;
+		this.scissor[3] = ch;
 	}
 
 	@Override

@@ -49,11 +49,16 @@ final class MetalDevice implements GpuDeviceBackend {
 	 * buffer at once, and when free memory is short the kernel compresses other memory first: 36-45 ms of one frame on the mini
 	 * with a 4 GiB heap. So one arena of this size is kept provisioned ahead of need, off the render thread (Native.poolAdd),
 	 * and handed to the next arena request it can hold, with its full size: Sodium sizes the arena from buffer.size(). Costs
-	 * its size in memory while it waits. -Dmcms.metal.arenaReserve=0 turns it off.
+	 * its size in memory while it waits. -Dmcms.metal.arenaReserve=0 turns it off; devices with a small working set (e.g. 8 GiB
+	 * Macs) disable it by default to avoid wiring 256 MiB ahead of time.
 	 */
-	private static final long ARENA_RESERVE = Long.getLong("mcms.metal.arenaReserve", 256L << 20);
+	private static final @Nullable Long ARENA_RESERVE_PROP = Long.getLong("mcms.metal.arenaReserve");
+	private static final long ARENA_RESERVE_DEFAULT = 256L << 20;
+	/** Minimum recommended working set (12 GiB) before pre-wiring a 256 MiB spare arena by default. */
+	private static final long ARENA_RESERVE_MIN_WORKING_SET = 12L << 30;
 	/** Wiring costs about 0.03 ms per MiB with memory free and 0.2-0.25 ms per MiB when short: only big arenas stall a frame. */
 	private static final long ARENA_RESERVE_MIN = 64L << 20;
+	private final long arenaReserve;
 	/** A provisioned arena waits in the pool (at most one at a time). */
 	private boolean arenaReserved;
 	private final long ctx;
@@ -67,8 +72,12 @@ final class MetalDevice implements GpuDeviceBackend {
 			long name = stack.nmalloc(1, 256), err = stack.nmalloc(1, 1024);
 			this.ctx = Native.create(name, 256, err, 1024);
 			if (this.ctx == 0) throw new BackendCreationException("Metal unavailable: " + MemoryUtil.memUTF8(err), BackendCreationException.Reason.PLATFORM_ERROR);
+			long workingSet = Native.recommendedWorkingSet(this.ctx);
+			this.arenaReserve = ARENA_RESERVE_PROP != null
+				? Math.max(0L, ARENA_RESERVE_PROP)
+				: (workingSet > 0 && workingSet < ARENA_RESERVE_MIN_WORKING_SET ? 0L : ARENA_RESERVE_DEFAULT);
 			this.info = new DeviceInfo(
-				MemoryUtil.memUTF8(name), "Apple", "Metal (Quicksilver 0.2.0, from mcopt 0.3.0-alpha.2)", true, "Metal", 1.0F,
+				MemoryUtil.memUTF8(name), "Apple", "Metal (Quicksilver 0.2.1, from mcopt 0.3.0-alpha.2)", true, "Metal", 1.0F,
 				new DeviceLimits(16, 256, 16384, Native.maxBufferLength(this.ctx), Integer.MAX_VALUE, 8, Integer.MAX_VALUE),
 				// Every multi-draw form is a native loop of Metal draws, so all of them are "supported".
 				new DeviceFeatures(true, true, true, true, true, true, true, true),
@@ -106,7 +115,7 @@ final class MetalDevice implements GpuDeviceBackend {
 
 	@Override
 	public GpuSampler createSampler(AddressMode u, AddressMode v, FilterMode min, FilterMode mag, int maxAnisotropy, OptionalDouble maxLod) {
-		return MetalSampler.create(this.ctx, u, v, min, mag, maxAnisotropy, maxLod);
+		return MetalSampler.create(this.encoder, u, v, min, mag, maxAnisotropy, maxLod);
 	}
 
 	@Override
@@ -142,17 +151,20 @@ final class MetalDevice implements GpuDeviceBackend {
 		MetalBuffer buffer;
 		try {
 			long handle = 0, actual = size;
-			if (arena && ARENA_RESERVE > 0 && size >= ARENA_RESERVE_MIN) {
+			if (arena && this.arenaReserve > 0 && size >= ARENA_RESERVE_MIN
+					&& size <= this.arenaReserve && size * 2 >= this.arenaReserve) {
 				// At most twice what was asked for: Sodium fills an arena over time, a much bigger one would mostly sit empty.
-				if (size <= ARENA_RESERVE && size * 2 >= ARENA_RESERVE) handle = Native.poolTake(size, ARENA_RESERVE);
+				handle = Native.poolTake(size, this.arenaReserve);
 				if (handle != 0) {
 					actual = Native.bufferLength(handle);
 					this.arenaReserved = false;
 				}
 				// The next one a second later: provisioning takes memory, and this frame is already finding some for the arena's use.
-				if (!this.arenaReserved) this.arenaReserved = Native.poolAdd(this.ctx, ARENA_RESERVE, handle != 0 ? 1000 : 0);
+				if (!this.arenaReserved) this.arenaReserved = Native.poolAdd(this.ctx, this.arenaReserve, handle != 0 ? 1000 : 0);
 			}
-			buffer = new MetalBuffer(this.encoder, handle != 0 ? handle : Native.bufferNew(this.ctx, size), usage, actual);
+			long buf = handle != 0 ? handle : Native.bufferNew(this.ctx, size);
+			if (buf == 0) throw new IllegalStateException("Couldn't allocate " + actual + "-byte Metal buffer");
+			buffer = new MetalBuffer(this.encoder, buf, usage, actual);
 		} finally {
 			MetalEvents.end(event);
 		}
@@ -162,8 +174,11 @@ final class MetalDevice implements GpuDeviceBackend {
 	@Override
 	public GpuBuffer createBuffer(@Nullable Supplier<String> label, @GpuBuffer.Usage int usage, ByteBuffer data) {
 		// A brand-new buffer isn't referenced by any command yet, so the data can go straight into its memory.
-		MetalBuffer buffer = new MetalBuffer(this.encoder, Native.bufferNew(this.ctx, data.remaining()), usage, data.remaining());
-		MemoryUtil.memCopy(MemoryUtil.memAddress(data), buffer.address, data.remaining());
+		long len = data.remaining();
+		long buf = Native.bufferNew(this.ctx, len);
+		if (buf == 0) throw new IllegalStateException("Couldn't allocate " + len + "-byte Metal buffer");
+		MetalBuffer buffer = new MetalBuffer(this.encoder, buf, usage, len);
+		MemoryUtil.memCopy(MemoryUtil.memAddress(data), buffer.address, len);
 		return buffer;
 	}
 
@@ -187,8 +202,11 @@ final class MetalDevice implements GpuDeviceBackend {
 	@Override
 	public void close() {
 		this.encoder.waitIdle();
+		TexelViews.clear(this.encoder);
+		this.encoder.drainPendingReleases();
 		// The engine releases its textures and pipelines through this device's context; after this call the device is gone.
 		dev.mcms.shaders.runtime.Engine.get().shutdown();
+		this.encoder.drainPendingReleases();
 		if (current == this) current = null;
 	}
 

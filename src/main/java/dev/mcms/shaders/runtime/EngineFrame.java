@@ -437,14 +437,16 @@ public final class EngineFrame implements AutoCloseable {
 	private final MemorySegment copyLabel;
 	private final MemorySegment upscaleLabel;
 	/** The clearing targets, chunked four per encoder (each brings both of its textures: eight attachments). */
-	private final int[][] clearingChunks;
+	private int[][] clearingChunks = new int[0][];
 	/** Per chunk: both textures of each target, filled per frame. */
-	private final long[][] clearHandles;
+	private long[][] clearHandles = new long[0][];
 	/**
 	 * Per chunk: the clear colours of each attachment, read from the targets at each clear (colortex0's default is this
 	 * frame's fog, refreshed before the clear hook).
 	 */
-	private final float[][][] clearColors;
+	private float[][][] clearColors = new float[0][][];
+	/** The {@link Targets} instance {@link #clearingChunks} was grouped for; rebuilt lazily after any resize. */
+	private @Nullable Targets clearTargets;
 	private final long[] copyColors = new long[1];
 	private final float[][] copyClears = {MetalBridge.DONT_CARE};
 	/** The main colour's single attachment for the no-final draw (one array, filled per frame; N2: no per-frame arrays). */
@@ -530,30 +532,7 @@ public final class EngineFrame implements AutoCloseable {
 		this.depthLabel = label("qs depth");
 		this.copyLabel = label("qs copy world");
 		this.upscaleLabel = label("qs upscale (bilinear)");
-		List<Integer> clearing = new ArrayList<>();
-		for (int t = 0; t < layout.count(); t++) {
-			if (layout.clears(t)) {
-				clearing.add(t);
-			}
-		}
-		int chunks = (clearing.size() + 3) / 4;
-		this.clearingChunks = new int[chunks][];
-		this.clearHandles = new long[chunks][];
-		this.clearColors = new float[chunks][][];
-		for (int c = 0; c < chunks; c++) {
-			int inChunk = Math.min(4, clearing.size() - c * 4);
-			this.clearingChunks[c] = new int[inChunk];
-			this.clearHandles[c] = new long[inChunk * 2];
-			float[][] colors = new float[inChunk * 2][];
-			for (int i = 0; i < inChunk; i++) {
-				int target = clearing.get(c * 4 + i);
-				this.clearingChunks[c][i] = target;
-				float[] color = layout.clearColor(target);
-				colors[i * 2] = color;
-				colors[i * 2 + 1] = color;
-			}
-			this.clearColors[c] = colors;
-		}
+		buildClearingChunks(layout);
 		List<CompiledProgram> frameRuns = new ArrayList<>();
 		List<CompiledProgram> shadowRuns = new ArrayList<>();
 		List<CompiledProgram> setupRuns = new ArrayList<>();
@@ -893,6 +872,9 @@ public final class EngineFrame implements AutoCloseable {
 		}
 		this.headRan = true;
 		this.blocks.upload(this.passBlock, this.passBytes);
+		if (enc != 0L) {
+			targets.customImages().clearInitial(enc);
+		}
 		if (this.setupPending) {
 			this.setupPending = false;
 			for (int s = 0; s < this.setupPlans.length; s++) {
@@ -1139,10 +1121,53 @@ public final class EngineFrame implements AutoCloseable {
 	}
 
 	/**
+	 * Groups allocated clearing targets by live pixel dimensions (max 4 targets = 8 attachments per Metal render pass).
+	 * Called at construction and lazily after any {@link Targets} rebuild so a window resize that separates fixed-size
+	 * and screen-relative targets never leaves mismatched sizes in one clear pass.
+	 */
+	private void buildClearingChunks(Targets layout) {
+		java.util.LinkedHashMap<Long, List<Integer>> clearingBySize = new java.util.LinkedHashMap<>();
+		for (int t = 0; t < layout.count(); t++) {
+			if (layout.made(t) && layout.clears(t)) {
+				long sizeKey = (((long) layout.width(t)) << 32) | (layout.height(t) & 0xffffffffL);
+				clearingBySize.computeIfAbsent(sizeKey, k -> new ArrayList<>()).add(t);
+			}
+		}
+		List<int[]> chunkTargets = new ArrayList<>();
+		List<long[]> chunkHandles = new ArrayList<>();
+		List<float[][]> chunkColors = new ArrayList<>();
+		for (List<Integer> group : clearingBySize.values()) {
+			for (int start = 0; start < group.size(); start += 4) {
+				int inChunk = Math.min(4, group.size() - start);
+				int[] targetsInChunk = new int[inChunk];
+				long[] handlesInChunk = new long[inChunk * 2];
+				float[][] colorsInChunk = new float[inChunk * 2][];
+				for (int i = 0; i < inChunk; i++) {
+					int target = group.get(start + i);
+					targetsInChunk[i] = target;
+					float[] color = layout.clearColor(target);
+					colorsInChunk[i * 2] = color;
+					colorsInChunk[i * 2 + 1] = color;
+				}
+				chunkTargets.add(targetsInChunk);
+				chunkHandles.add(handlesInChunk);
+				chunkColors.add(colorsInChunk);
+			}
+		}
+		this.clearingChunks = chunkTargets.toArray(int[][]::new);
+		this.clearHandles = chunkHandles.toArray(long[][]::new);
+		this.clearColors = chunkColors.toArray(float[][][]::new);
+		this.clearTargets = layout;
+	}
+
+	/**
 	 * The clears of one frame (plan.md E3): both textures of every clearing target, each in the colour the targets hold
 	 * now (colortex0's default is this frame's fog, refreshed before the clear hook).
 	 */
 	private void clears(long enc, Targets targets) {
+		if (targets != this.clearTargets) {
+			buildClearingChunks(targets);
+		}
 		for (int c = 0; c < this.clearingChunks.length; c++) {
 			long[] handles = this.clearHandles[c];
 			for (int i = 0; i < this.clearingChunks[c].length; i++) {
@@ -1151,8 +1176,9 @@ public final class EngineFrame implements AutoCloseable {
 				handles[i * 2 + 1] = targets.write(target);
 				targets.clearColorInto(target, this.clearColors[c][i * 2]);  // both textures of the target share this array
 			}
-			MetalBridge.renderBegin(enc, handles, this.clearColors[c], 0, false, 0, targets.width(0),
-				targets.height(0));
+			int rep = this.clearingChunks[c][0];
+			MetalBridge.renderBegin(enc, handles, this.clearColors[c], 0, false, 0, targets.width(rep),
+				targets.height(rep));
 			if (c == 0) {
 				ShaderNative.renderLabel(enc, this.clearsLabel);
 			}
@@ -1419,6 +1445,8 @@ public final class EngineFrame implements AutoCloseable {
 				int source = k.imageSources[i];
 				if (source >= ComputeKernel.IMAGE_TARGET && source < ComputeKernel.IMAGE_SHADOW) {
 					targets.bump(source - ComputeKernel.IMAGE_TARGET);  // a store changed the target: its mip chain refills
+				} else if (source >= ComputeKernel.IMAGE_SHADOW && source < ComputeKernel.IMAGE_CUSTOM && this.shadow != null) {
+					this.shadow.wroteColor(source - ComputeKernel.IMAGE_SHADOW, false);  // shadowcolorimgN store: mip chain refills
 				}
 			}
 		}
@@ -1504,6 +1532,9 @@ public final class EngineFrame implements AutoCloseable {
 		}
 		fillMips(enc, plan, targets);
 		List<ColorTarget> outputs = pass.outputs();
+		if (plan.targets.length == 0 || outputs.isEmpty()) {
+			return;
+		}
 		for (int i = 0; i < plan.targets.length; i++) {
 			int slot = outputs.get(i).attachment();
 			plan.colors[slot] = plan.shadowOutputs ? this.shadow.colorWrite(plan.targets[i])

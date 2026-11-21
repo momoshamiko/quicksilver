@@ -606,7 +606,15 @@ public final class Parser {
 
 	// --- Statements ---
 
+	/** Skips {@code #pragma} directives that appear inside function bodies or loops (e.g. {@code #pragma unroll}). */
+	private void skipBlockPragmas() {
+		while (at(DIRECTIVE) && stripComment(peek().text()).startsWith("#pragma")) {
+			next();
+		}
+	}
+
 	private Stmt statement() {
+		skipBlockPragmas();
 		Token t = peek();
 		if (t.kind() == LBRACE) {
 			return block();
@@ -741,7 +749,11 @@ public final class Parser {
 	private BlockStmt block() {
 		Token lb = expect(LBRACE, "'{'");
 		List<Stmt> ss = new ArrayList<>();
-		while (!at(RBRACE)) {
+		for (;;) {
+			skipBlockPragmas();
+			if (at(RBRACE)) {
+				break;
+			}
 			if (at(EOF)) {
 				throw err(peek(), "expected '}' to close the block, found end of file");
 			}

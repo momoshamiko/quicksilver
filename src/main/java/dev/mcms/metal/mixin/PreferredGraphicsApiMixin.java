@@ -22,7 +22,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 abstract class PreferredGraphicsApiMixin {
 	@Inject(method = "getBackendsToTry", at = @At("RETURN"), cancellable = true)
 	private void mcms$metalFirst(CallbackInfoReturnable<GpuBackend[]> cir) {
-		if (!Boolean.parseBoolean(System.getProperty("mcms.metal", "true")) || MetalSupport.blocker() != null) return;
+		if (!MetalSupport.metalEnabled() || MetalSupport.blocker() != null) return;
 		GpuBackend[] fallbacks = cir.getReturnValue();
 		GpuBackend[] backends = new GpuBackend[fallbacks.length + 1];
 		backends[0] = new MetalBackend();

@@ -624,8 +624,9 @@ final class MipmapDeclarationGpuTest {
 	}
 
 	private static Targets targetsOf(long ctx, DimensionSet set, PackModel model) {
-		Targets targets = new Targets(set.dimension().union(), model.properties().bufferSizes(), set.usedTargets(), false,
-			false, W, H, Targets.engineTextures(ctx), null, CustomImages.create(ctx, model.properties().images(), W, H));
+		Targets targets = new Targets(set.dimension().union(), model.properties().bufferSizes(), set.usedTargets(),
+			set.imageTargets(), false, false, W, H, Targets.engineTextures(ctx), null,
+			CustomImages.create(ctx, model.properties().images(), W, H));
 		assertTrue(targets.create());
 		return targets;
 	}

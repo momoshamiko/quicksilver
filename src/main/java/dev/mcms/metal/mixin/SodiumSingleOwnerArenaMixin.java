@@ -1,3 +1,4 @@
+// Quicksilver: original code, Apache-2.0.
 package dev.mcms.metal.mixin;
 
 import net.caffeinemc.mods.sodium.client.gpu.arena.RegionAllocatorHandle;
@@ -15,7 +16,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  */
 @Mixin(SingleOwnerBufferArena.class)
 abstract class SodiumSingleOwnerArenaMixin {
-	@Inject(method = "deleteSingleOwner", at = @At("TAIL"))
+	@Inject(method = "deleteSingleOwner", at = @At("TAIL"), require = 0)
 	private void mcmsMetal$releaseDebugTexture(RegionAllocatorHandle owner, CallbackInfo ci) {
 		Minecraft.getInstance().getTextureManager().release(((SodiumBufferArenaAccessor) (Object) this).mcmsMetal$textureId());
 	}

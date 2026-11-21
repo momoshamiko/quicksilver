@@ -174,4 +174,15 @@ class QuicksilverSettingsShadersTest {
 		System.setProperty("mcms.shaders.upscale", "ultra");
 		assertEquals(QuicksilverSettings.Upscale.PERFORMANCE, QuicksilverSettings.upscale(), "a word that names no value is no flag");
 	}
+
+	@Test
+	void savedConfigHasNoPrivateRepoPathsAndIgnoresInvalidShadersFlag(@TempDir Path dir) throws IOException {
+		load(dir, "shaders=on\nshaderPack=p.zip\n");
+		QuicksilverSettings.save();
+		String saved = Files.readString(dir.resolve("quicksilver.properties"));
+		assertFalse(saved.contains("docs/decisions/"), "saved user config must not cite internal repo paths");
+		System.setProperty("mcms.shaders", "invalid-word");
+		assertFalse(QuicksilverSettings.shadersLocked(), "invalid -Dmcms.shaders word must not lock the setting");
+		assertTrue(QuicksilverSettings.shadersOn(), "invalid -Dmcms.shaders word falls back to file value");
+	}
 }

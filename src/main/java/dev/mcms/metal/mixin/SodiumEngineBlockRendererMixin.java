@@ -37,11 +37,9 @@ abstract class SodiumEngineBlockRendererMixin {
 		}
 	}
 
-	@Inject(method = "renderModel", at = @At("TAIL"))
+	@Inject(method = "renderModel", at = @At("RETURN"))
 	private void mcmsMetal$blockContextEnd(BlockStateModel model, BlockState state, BlockPos pos, BlockPos origin,
 		CallbackInfo ci) {
-		if (TerrainEngine.active()) {
-			TerrainContext.end();
-		}
+		TerrainContext.end();
 	}
 }

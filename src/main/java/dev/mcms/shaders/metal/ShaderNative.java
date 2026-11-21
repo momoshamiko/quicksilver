@@ -295,8 +295,22 @@ public final class ShaderNative {
 	}
 
 	/** The byte count the native side memcpy's for the box (mcshaders.m's own formula); a short array would read past it. */
-	private static void requireBytes(byte[] bytes, long bytesPerRow, long bytesPerImage, int height, int depth, String what) {
-		long needed = bytesPerImage > 0 ? bytesPerImage * depth : bytesPerRow * height;
+	static void requireBytes(byte[] bytes, long bytesPerRow, long bytesPerImage, int height, int depth, String what) {
+		if (bytes == null) {
+			throw new IllegalArgumentException("texture " + what + " bytes is null");
+		}
+		if (height < 1 || depth < 1 || bytesPerRow < 0 || bytesPerImage < 0) {
+			throw new IllegalArgumentException("texture " + what + " invalid box: height=" + height + " depth=" + depth
+				+ " bytesPerRow=" + bytesPerRow + " bytesPerImage=" + bytesPerImage);
+		}
+		long image;
+		long needed;
+		try {
+			image = bytesPerImage > 0 ? bytesPerImage : Math.multiplyExact(bytesPerRow, (long) height);
+			needed = Math.multiplyExact(image, (long) depth);
+		} catch (ArithmeticException overflow) {
+			throw new IllegalArgumentException("texture " + what + " byte size overflows", overflow);
+		}
 		if (bytes.length < needed) {
 			throw new IllegalArgumentException("texture " + what + " needs " + needed + " bytes, the array holds " + bytes.length);
 		}

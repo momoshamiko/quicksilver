@@ -362,8 +362,8 @@ public final class BuiltinFunctions {
 			for (int k = 2; k <= 4; k++) {
 				GlslType w = VectorType.of(ScalarKind.FLOAT, k);
 				GlslType dw = VectorType.of(ScalarKind.DOUBLE, k);
-				sig("outerProduct", 120, dev.mcms.glsl.types.MatrixType.of(ScalarKind.FLOAT, n, k), in(v), in(w));
-				sig("outerProduct", 400, dev.mcms.glsl.types.MatrixType.of(ScalarKind.DOUBLE, n, k), in(dv), in(dw));
+				sig("outerProduct", 120, dev.mcms.glsl.types.MatrixType.of(ScalarKind.FLOAT, k, n), in(v), in(w));
+				sig("outerProduct", 400, dev.mcms.glsl.types.MatrixType.of(ScalarKind.DOUBLE, k, n), in(dv), in(dw));
 			}
 			GlslType m = dev.mcms.glsl.types.MatrixType.of(ScalarKind.FLOAT, n, n);
 			GlslType dm = dev.mcms.glsl.types.MatrixType.of(ScalarKind.DOUBLE, n, n);

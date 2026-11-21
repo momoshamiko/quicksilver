@@ -1866,7 +1866,7 @@ public final class GbufferPlans implements AutoCloseable {
 				int overlaySlot = request.overlayColor() == null ? -1 : request.overlayColor().textureSlot();
 				return new Built(pso, psoNoDepth, translation.reflection(), request.textures(), request.images(),
 					request.buffers(), perVertexSlot, overlaySlot, prologue, "");
-			} catch (IllegalStateException e) {
+			} catch (IllegalStateException | IllegalArgumentException e) {
 				return Built.failed("the Metal pipeline was refused: " + e.getMessage());
 			}
 		}

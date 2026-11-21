@@ -1,3 +1,4 @@
+// Quicksilver: original code, Apache-2.0.
 package dev.mcms.metal.mixin;
 
 import net.caffeinemc.mods.sodium.client.gpu.arena.BufferArena;

@@ -2,11 +2,15 @@
 package dev.mcms.shaders.ui;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 
 import org.jspecify.annotations.Nullable;
 
@@ -43,9 +47,12 @@ public final class PackScreen extends Screen {
 	private final @Nullable Screen parent;
 	/** Runs after Apply saved, before the parent shows again (the page refreshes its rows); may be null. */
 	private final @Nullable Runnable onApplied;
-	private List<String> packs;
+	private List<String> packs = List.of();
+	private boolean listLoaded;
+	private @Nullable CompletableFuture<List<String>> listingTask;
 	private final boolean shadersLocked;
 	private final boolean packLocked;
+	private final boolean shadersForcedOn;
 	/** The pack the player chose; null for "Shaders off". */
 	private @Nullable String chosenPack;
 	/** Replaces the status line while set (a folder that could not be opened). */
@@ -64,10 +71,37 @@ public final class PackScreen extends Screen {
 		super(Component.translatable("quicksilver.shaders.packs.title"));
 		this.parent = parent;
 		this.onApplied = onApplied;
-		this.packs = listPacks();
 		this.shadersLocked = QuicksilverSettings.shadersLocked();
 		this.packLocked = QuicksilverSettings.packLocked();
+		this.shadersForcedOn = this.shadersLocked && QuicksilverSettings.shadersOn();
 		this.chosenPack = QuicksilverSettings.shadersOn() ? QuicksilverSettings.shaderPackName() : null;
+		startListing();
+	}
+
+	/** Starts scanning the shaderpacks folder off the render thread so opening the screen never hitches. */
+	private void startListing() {
+		if (this.listingTask != null && !this.listingTask.isDone()) {
+			return;
+		}
+		Path dir = folder();
+		this.listingTask = CompletableFuture.supplyAsync(() -> {
+			try {
+				return PackListing.list(dir);
+			} catch (IOException e) {
+				throw new UncheckedIOException(e);
+			}
+		});
+	}
+
+	/** Whether switching packs in the list is completely blocked (pack flag set, or shaders forced off). */
+	private boolean fullyLocked() {
+		return packLocked || (shadersLocked && !shadersForcedOn);
+	}
+
+	/** Whether selecting {@code pack} (null = "Shaders off") is blocked by launch flags. */
+	private boolean entryBlocked(@Nullable String pack) {
+		if (fullyLocked()) return true;
+		return shadersForcedOn && pack == null;
 	}
 
 	/** The pack screen; {@code parent} is shown again on Done and after Apply. */
@@ -85,37 +119,26 @@ public final class PackScreen extends Screen {
 		return FabricLoader.getInstance().getGameDir().resolve("shaderpacks");
 	}
 
-	/** The packs in the folder; empty, with the reason in the status line, when the folder cannot be read. */
-	private List<String> listPacks() {
-		try {
-			List<String> found = PackListing.list(folder());
-			this.listingError = null;
-			return found;
-		} catch (IOException e) {
-			this.listingError = Component.translatable("quicksilver.shaders.status.list_failed", e.toString());
-			return List.of();
-		}
-	}
-
 	@Override
 	protected void init() {
-		boolean locked = shadersLocked || packLocked;
+		boolean showLockBanner = shadersLocked || packLocked;
 		// A launch flag adds a header line that names it (a tooltip on the list would cover the title).
-		int header = locked ? HEADER + ScreenText.LINE : HEADER;
+		int header = showLockBanner ? HEADER + ScreenText.LINE : HEADER;
 		layout = new HeaderAndFooterLayout(this, header, FOOTER);
 		list = layout.addToContents(new PackList(minecraft, width, height - header - FOOTER, header, ROW));
-		list.active = !locked;
+		list.active = !fullyLocked();
 
 		fillList();
 
+		int btnW = Math.min(100, Math.max(60, (width - 40) / 4));
 		LinearLayout row = layout.addToFooter(LinearLayout.horizontal().spacing(8));
 		apply = row.addChild(Button.builder(Component.translatable("quicksilver.shaders.button.apply"), b -> apply())
-			.width(100).build());
+			.width(btnW).build());
 		options = row.addChild(Button.builder(Component.translatable("quicksilver.shaders.button.options"), b -> openOptions())
-			.width(100).build());
+			.width(btnW).build());
 		row.addChild(Button.builder(Component.translatable("quicksilver.shaders.button.open_folder"), b -> openFolder())
-			.width(100).build());
-		row.addChild(Button.builder(Component.translatable("gui.done"), b -> onClose()).width(100).build());
+			.width(btnW).build());
+		row.addChild(Button.builder(Component.translatable("gui.done"), b -> onClose()).width(btnW).build());
 
 		String blocked = applyBlocked();
 		if (blocked != null) apply.setTooltip(Tooltip.create(Component.literal(blocked)));
@@ -143,16 +166,29 @@ public final class PackScreen extends Screen {
 		}
 	}
 
-	/** Reads the folder again when the game window gets its focus back, so a pack dropped in meanwhile shows. */
+	/** Polls the background folder scan and triggers a fresh scan when the window regains focus. */
 	@Override
 	public void tick() {
+		if (this.listingTask != null && this.listingTask.isDone()) {
+			CompletableFuture<List<String>> done = this.listingTask;
+			this.listingTask = null;
+			this.listLoaded = true;
+			try {
+				List<String> found = done.join();
+				this.listingError = null;
+				if (!found.equals(this.packs)) {
+					this.packs = found;
+					if (this.list != null) fillList();
+				}
+			} catch (CompletionException | CancellationException e) {
+				Throwable cause = e.getCause() instanceof UncheckedIOException io ? io.getCause() : e.getCause();
+				this.listingError = Component.translatable("quicksilver.shaders.status.list_failed",
+					String.valueOf(cause != null ? cause : e));
+			}
+		}
 		boolean active = minecraft.isWindowActive();
 		if (active && !windowWasActive) {
-			List<String> found = listPacks();
-			if (!found.equals(packs)) {
-				packs = found;
-				fillList();
-			}
+			startListing();
 		}
 		windowWasActive = active;
 	}
@@ -163,18 +199,21 @@ public final class PackScreen extends Screen {
 		graphics.centeredText(font, title, width / 2, 9, WHITE);
 		Component problem = note != null ? note : listingError;
 		boolean bad = problem != null || Engine.cannotRunReason() != null || engineFailed();
-		Component line = problem != null ? problem : status();
+		Component line = problem != null ? problem
+			: (!listLoaded ? Component.translatable("quicksilver.shaders.packs.loading_list") : status());
 		ScreenText.status(graphics, font, line, width, 22, bad ? RED : WHITE);
 		if (shadersLocked || packLocked) {
 			graphics.centeredText(font, lockedBy(), width / 2, 22 + ScreenText.STATUS_LINES * ScreenText.LINE, WHITE);
 		}
-		apply.active = applyBlocked() == null;
+		String blocked = applyBlocked();
+		apply.active = blocked == null;
+		apply.setTooltip(blocked != null ? Tooltip.create(Component.literal(blocked)) : null);
 		options.active = chosenPack != null;
 	}
 
 	/** Why Apply cannot be used, or null when it can. */
 	private @Nullable String applyBlocked() {
-		if (shadersLocked || packLocked) return lockedBy().getString();
+		if (entryBlocked(chosenPack)) return lockedBy().getString();
 		return Engine.cannotRunReason();
 	}
 
@@ -214,9 +253,15 @@ public final class PackScreen extends Screen {
 
 	private void apply() {
 		if (applyBlocked() != null) return;
-		QuicksilverSettings.setShaders(chosenPack != null);
+		boolean retryFailed = engineFailed();
+		if (!shadersLocked) {
+			QuicksilverSettings.setShaders(chosenPack != null);
+		}
 		if (chosenPack != null) QuicksilverSettings.setShaderPack(chosenPack);
 		QuicksilverSettings.save();
+		if (retryFailed) {
+			Engine.get().reloadPack();
+		}
 		if (onApplied != null) onApplied.run();
 		onClose();
 	}
@@ -239,6 +284,10 @@ public final class PackScreen extends Screen {
 
 	@Override
 	public void onClose() {
+		if (this.listingTask != null) {
+			this.listingTask.cancel(true);
+			this.listingTask = null;
+		}
 		if (parent == null) {
 			super.onClose();
 		} else {
@@ -254,7 +303,7 @@ public final class PackScreen extends Screen {
 		/** The chosen pack follows the selection, so the arrow keys choose as a click does; a launch flag holds it. */
 		@Override
 		public void setSelected(@Nullable PackEntry entry) {
-			if (entry != null && (shadersLocked || packLocked) && !Objects.equals(entry.pack, chosenPack)) {
+			if (entry != null && entryBlocked(entry.pack) && !Objects.equals(entry.pack, chosenPack)) {
 				return;
 			}
 			super.setSelected(entry);
@@ -280,7 +329,15 @@ public final class PackScreen extends Screen {
 
 		@Override
 		public void extractContent(GuiGraphicsExtractor graphics, int mouseX, int mouseY, boolean hovered, float partialTick) {
-			graphics.text(font, label(), getContentX() + 2, getContentY() + (getContentHeight() - 9) / 2, WHITE);
+			Component text = label();
+			int maxW = Math.max(20, getContentWidth() - 4);
+			if (font.width(text) > maxW) {
+				int ellipsis = font.width("...");
+				String clipped = font.plainSubstrByWidth(text.getString(), Math.max(0, maxW - ellipsis)) + "...";
+				text = Component.literal(clipped);
+			}
+			int color = entryBlocked(pack) && !Objects.equals(pack, chosenPack) ? 0xFF888888 : WHITE;
+			graphics.text(font, text, getContentX() + 2, getContentY() + (getContentHeight() - 9) / 2, color);
 		}
 
 		@Override
@@ -290,7 +347,7 @@ public final class PackScreen extends Screen {
 
 		@Override
 		public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
-			if (shadersLocked || packLocked) return false;
+			if (entryBlocked(pack)) return false;
 			list.setSelected(this);
 			return true;
 		}

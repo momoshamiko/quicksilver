@@ -98,7 +98,12 @@ final class MetalSurface implements GpuSurfaceBackend {
 		this.ctx = ctx;
 		this.encoder = encoder;
 		this.view = SDLMetal.SDL_Metal_CreateView(window);
+		if (this.view == 0) throw new IllegalStateException("SDL_Metal_CreateView failed for window " + window);
 		this.layer = SDLMetal.SDL_Metal_GetLayer(this.view);
+		if (this.layer == 0) {
+			SDLMetal.SDL_Metal_DestroyView(this.view);
+			throw new IllegalStateException("SDL_Metal_GetLayer failed for view " + this.view);
+		}
 		Native.vsyncView(this.view);  // RIL-476: the refresh grid follows the display that shows this view's window
 		// test only: -Dmcms.metal.vsyncPaceTest=MODE with vsyncPaceTestAt=SECONDS and vsyncPaceTestFor=SECONDS takes the VSync-on
 		// wait's refresh grid away for a while (mc_vsync_test); separate properties, because Prism's instance.cfg cannot hold a comma
@@ -169,11 +174,15 @@ final class MetalSurface implements GpuSurfaceBackend {
 	}
 
 	private static int colorspace(String value) {
-		return switch (value) {
-			case "none" -> 0;
+		String normalized = value == null ? "none" : value.trim().toLowerCase(java.util.Locale.ROOT);
+		return switch (normalized) {
+			case "none", "" -> 0;
 			case "srgb" -> 1;
 			case "p3" -> 2;
-			default -> throw new IllegalArgumentException("-Dmcms.metal.colorspace: none, srgb or p3, not " + value);
+			default -> {
+				System.out.println("mcms-metal: unknown -Dmcms.metal.colorspace=" + value + " (expected none, srgb or p3); using none");
+				yield 0;
+			}
 		};
 	}
 
@@ -216,8 +225,13 @@ final class MetalSurface implements GpuSurfaceBackend {
 		}
 		if (WaitStats.ON) WaitStats.wait(WaitStats.DRAWABLE, System.nanoTime() - t2, 0);
 		if (drawable == 0) return; // no drawable (window hidden): skip the frame's present
-		this.encoder.presentTexture(drawable, textureView);
-		this.encoder.afterGpuFinishes(() -> Native.release(drawable));
+		// Release Java's retain right away: mc_present / mc_present_queued hold their own retain for the command buffer / worker,
+		// so CAMetalLayer gets the drawable back as soon as scanout completes instead of waiting for retire() frames later.
+		try {
+			this.encoder.presentTexture(drawable, textureView);
+		} finally {
+			Native.release(drawable);
+		}
 	}
 
 	@Override
@@ -251,6 +265,7 @@ final class MetalSurface implements GpuSurfaceBackend {
 	@Override
 	public void close() {
 		if (current == this) current = null;
+		Native.presentStop();
 		Native.vsyncView(0);
 		SDLMetal.SDL_Metal_DestroyView(this.view);
 	}

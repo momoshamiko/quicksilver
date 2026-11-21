@@ -24,7 +24,7 @@ abstract class DistantHorizonsFarClipMixin {
 
 	@Inject(method = "getFarClipPlaneDistanceInBlocks", at = @At("HEAD"), cancellable = true)
 	private static void mcmsMetal$packFarClip(CallbackInfoReturnable<Float> cir) {
-		if (Engine.get().servesDistant()) {
+		if (Engine.get().servesDistant() && DhApi.Delayed.configs != null) {
 			int chunks = DhApi.Delayed.configs.graphics().chunkRenderDistance().getValue();
 			cir.setReturnValue((float) ((chunks * 16 + 512) * Math.sqrt(2.0)));
 		}

@@ -46,7 +46,7 @@ public final class PackListing {
 	private static boolean opens(Path pack) {
 		try (PackSource source = PackSource.open(pack)) {
 			return true;
-		} catch (IOException | UncheckedIOException e) {
+		} catch (IOException | UncheckedIOException | IllegalArgumentException e) {
 			return false;
 		}
 	}

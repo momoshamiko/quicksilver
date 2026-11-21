@@ -81,6 +81,9 @@ public record TextureImage(int format, int type, int width, int height, int dept
 				return Optional.empty();
 			}
 			int w = image.getWidth(), h = image.getHeight();
+			if (w <= 0 || h <= 0 || (long) w * h > 16384L * 16384L) {
+				return Optional.empty();
+			}
 			byte[] out = new byte[w * h * 4];
 			ColorModel cm = image.getColorModel();
 			if (cm instanceof IndexColorModel || cm.getColorSpace().getType() != ColorSpace.TYPE_GRAY) {

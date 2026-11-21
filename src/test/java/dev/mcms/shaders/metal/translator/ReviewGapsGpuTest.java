@@ -228,4 +228,56 @@ final class ReviewGapsGpuTest {
 		assertEquals(bits(0.0f), r[0]);
 		assertEquals(bits(1.0f), r[1]);
 	}
+
+	@Test
+	void matrixToVectorConstructorEvaluatesSideEffectOnce() {
+		int[] r = kernel(OUT + """
+
+			uint calls = 0u;
+			const vec4 CONST_FROM_MAT = vec4(mat2(1.0, 2.0, 3.0, 4.0));
+			mat2 nextMat2() {
+				calls++;
+				float b = float(calls) * 10.0;
+				return mat2(b + 1.0, b + 2.0, b + 3.0, b + 4.0);
+			}
+			mat3 nextMat3() {
+				calls++;
+				float b = float(calls) * 10.0;
+				return mat3(b + 1.0, b + 2.0, b + 3.0, b + 4.0, b + 5.0, b + 6.0, b + 7.0, b + 8.0, b + 9.0);
+			}""", """
+			vec4 a = vec4(nextMat2());
+			vec3 b = vec3(nextMat2());
+			ivec4 c = ivec4(nextMat2());
+			vec4 d = vec4(nextMat3());
+			vec4 skipped = calls == 0u ? vec4(nextMat2()) : vec4(99.0);
+			ob.o[0] = calls;
+			ob.o[1] = floatBitsToUint(a.x);
+			ob.o[2] = floatBitsToUint(a.y);
+			ob.o[3] = floatBitsToUint(a.z);
+			ob.o[4] = floatBitsToUint(a.w);
+			ob.o[5] = floatBitsToUint(b.x);
+			ob.o[6] = floatBitsToUint(b.y);
+			ob.o[7] = floatBitsToUint(b.z);
+			ob.o[8] = uint(c.x);
+			ob.o[9] = uint(c.w);
+			ob.o[10] = floatBitsToUint(d.x);
+			ob.o[11] = floatBitsToUint(d.w);
+			ob.o[12] = floatBitsToUint(skipped.x);
+			ob.o[13] = floatBitsToUint(CONST_FROM_MAT.w);
+			""");
+		assertEquals(4, r[0], "each matrix-to-vector constructor must call its argument once and respect short-circuiting");
+		assertEquals(bits(11.0f), r[1]);
+		assertEquals(bits(12.0f), r[2]);
+		assertEquals(bits(13.0f), r[3]);
+		assertEquals(bits(14.0f), r[4]);
+		assertEquals(bits(21.0f), r[5]);
+		assertEquals(bits(22.0f), r[6]);
+		assertEquals(bits(23.0f), r[7]);
+		assertEquals(31, r[8]);
+		assertEquals(34, r[9]);
+		assertEquals(bits(41.0f), r[10]);
+		assertEquals(bits(44.0f), r[11]);
+		assertEquals(bits(99.0f), r[12]);
+		assertEquals(bits(4.0f), r[13]);
+	}
 }

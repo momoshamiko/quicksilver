@@ -86,6 +86,9 @@ public final class ShadowTargets {
 	/** A shadowcolor sampler name written out in a stage text ({@code shadowcolor3}): group 1 is its index. */
 	private static final Pattern COLOR_SAMPLER = Pattern.compile("\\bshadow[cC]olor([0-7])\\b");
 
+	/** A shadowcolor storage image name ({@code shadowcolorimg3}): group 1 is its index. */
+	private static final Pattern COLOR_IMAGE = Pattern.compile("\\bshadowcolorimg([0-7])\\b");
+
 	/** A comment in a stage text: a block comment or a line comment. */
 	private static final Pattern COMMENT = Pattern.compile("/\\*.*?\\*/|//[^\\n]*", Pattern.DOTALL);
 
@@ -121,6 +124,7 @@ public final class ShadowTargets {
 	private final boolean[] colorMipmapped = new boolean[COLOR_TARGETS];
 	private final boolean[] colorNearest = new boolean[COLOR_TARGETS];
 	private final boolean[] colorClears = new boolean[COLOR_TARGETS];
+	private final boolean[] colorImageWritten = new boolean[COLOR_TARGETS];
 	private final float[][] clearColors = new float[COLOR_TARGETS][];
 	/** Bumps when a texture's content changed (a clear, a pass that wrote it); a mip chain is stale until refilled. */
 	private final long[] generation = new long[TEXTURES];
@@ -168,10 +172,18 @@ public final class ShadowTargets {
 	 */
 	public ShadowTargets(TargetUnion union, boolean waterShadow, boolean used, int namedColours, boolean flipping,
 			boolean shadowProgramOff) {
+		this(union, waterShadow, used, namedColours, flipping, shadowProgramOff, 0);
+	}
+
+	public ShadowTargets(TargetUnion union, boolean waterShadow, boolean used, int namedColours, boolean flipping,
+			boolean shadowProgramOff, int imageMask) {
 		this.waterShadow = waterShadow;
 		this.used = used;
 		this.flipping = flipping;
 		this.shadowProgramOff = shadowProgramOff;
+		for (int i = 0; i < COLOR_TARGETS; i++) {
+			this.colorImageWritten[i] = (imageMask & (1 << i)) != 0;
+		}
 		Map<String, ConstValue> c = union.shadowConstants();
 		this.resolution = Math.max(1, intOf(c, DEFAULT_RESOLUTION, "shadowMapResolution"));
 		int count = MINIMUM_COLOR;
@@ -220,6 +232,7 @@ public final class ShadowTargets {
 	public static ShadowTargets of(DimensionPrograms dimension) {
 		boolean used = false, water = false, flipping = false, off = false;
 		int named = 0;
+		int imageMask = 0;
 		for (ResolvedProgram program : dimension.programs()) {
 			if (!program.runs()) {
 				off |= program.name().equals(DefaultShadowProgram.NAME) && program.source() == ResolvedProgram.Source.DISABLED;
@@ -227,9 +240,16 @@ public final class ShadowTargets {
 			}
 			used |= program.name().startsWith("shadow");
 			for (StageFile file : program.stages()) {
-				used |= readsShadow(file.text());
-				water |= readsWaterShadow(file.text());
-				named = Math.max(named, colorsNamedBy(file.text()));
+				String text = file.text();
+				used |= readsShadow(text);
+				water |= readsWaterShadow(text);
+				named = Math.max(named, colorsNamedBy(text));
+				int imgBits = colorImagesNamedBy(text);
+				imageMask |= imgBits;
+				if (imgBits != 0) {
+					used = true;
+					named = Math.max(named, 32 - Integer.numberOfLeadingZeros(imgBits));
+				}
 			}
 			if (program.name().startsWith("shadow")) {
 				named = Math.max(named, writesNamedBy(program));
@@ -238,7 +258,17 @@ public final class ShadowTargets {
 				}
 			}
 		}
-		return new ShadowTargets(dimension.union(), water, used, named, flipping, off);
+		return new ShadowTargets(dimension.union(), water, used, named, flipping, off, imageMask);
+	}
+
+	/** Bitmask of {@code shadowcolorimg<0..7>} referenced outside comments. */
+	private static int colorImagesNamedBy(String stageText) {
+		int mask = 0;
+		Matcher m = COLOR_IMAGE.matcher(COMMENT.matcher(stageText).replaceAll(" "));
+		while (m.find()) {
+			mask |= 1 << Integer.parseInt(m.group(1));
+		}
+		return mask;
 	}
 
 	/** Whether a stage text declares a shadow sampler (any shadow name, comparison or not). */
@@ -670,22 +700,23 @@ public final class ShadowTargets {
 		this.textures = textures;
 		changed();  // new textures hold no mip chain yet: every chain is stale until it is filled
 		for (int i = 0; i < DEPTH_TARGETS; i++) {
-			depths[i] = textures.create(TargetFormats.DEPTH32_FLOAT, resolution, resolution, 1);
+			depths[i] = textures.create(TargetFormats.DEPTH32_FLOAT, resolution, resolution, 1, false);
 			if (depths[i] == 0L) {
 				release();
 				return false;
 			}
 		}
 		for (int i = 0; i < colorCount; i++) {
+			boolean shaderWrite = colorImageWritten[i];
 			colors[i] = textures.create(colorFormats[i].format(), resolution, resolution,
-				mipLevels(resolution, colorMipmapped[i]));
+				mipLevels(resolution, colorMipmapped[i]), shaderWrite);
 			if (colors[i] == 0L) {
 				release();
 				return false;
 			}
 			if (flipping) {
 				alternates[i] = textures.create(colorFormats[i].format(), resolution, resolution,
-					mipLevels(resolution, colorMipmapped[i]));
+					mipLevels(resolution, colorMipmapped[i]), shaderWrite);
 				if (alternates[i] == 0L) {
 					release();
 					return false;

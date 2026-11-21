@@ -2,7 +2,7 @@ plugins {
 	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 }
 
-version = '0.2.0'
+version = '0.2.1'
 group = 'dev.mcms'
 
 // The public name (chosen 2026-10-16): the jar is quicksilver-<version>.jar. The Gradle project keeps the folder's name.
@@ -136,9 +136,13 @@ tasks.register('checkEngineImports') {
 			fileTree(it) { include '**/*.glsl', '**/*.vsh', '**/*.fsh', '**/*.csh', '**/*.gsh', '**/*.metal', '**/*.properties', '**/*.txt', '**/*.json', '**/*.lang' }
 		}
 	def pureTrees = ['main', 'test'].collectMany { set -> ["src/$set/java/dev/mcms/glsl", "src/$set/java/dev/mcms/shaders/pack", "src/$set/java/dev/mcms/shaders/expr"] }.collect { fileTree(it) }
-	def engineMixins = fileTree('src/main/java/dev/mcms/metal/mixin') { include 'Engine*.java', 'SodiumEngine*.java', 'DistantHorizonsEngine*.java' }
-	def nativeFiles = files('src/main/native/mcshaders.m')
-	inputs.files(engineTrees, engineMixins, nativeFiles)
+	def engineMixins = fileTree('src/main/java/dev/mcms/metal/mixin') {
+		include 'Engine*.java', 'SodiumEngine*.java', 'DistantHorizons*.java'
+		exclude 'DistantHorizonsRenderApiMixin.java'
+	}
+	def engineDistant = fileTree('src/main/java/dev/mcms/metal/distant')
+	def nativeFiles = files('src/main/native/mcshaders.m', 'src/main/native/mcshaders.h')
+	inputs.files(engineTrees, engineMixins, engineDistant, nativeFiles)
 	def stamp = layout.buildDirectory.file('checkEngineImports.ok')
 	outputs.file stamp
 	doLast {
@@ -151,7 +155,7 @@ tasks.register('checkEngineImports') {
 				if (m.find()) problems << "${projectDir.toPath().relativize(f.toPath())}:${i + 1}: ${m.group(1)} ($why)"
 			}
 		}
-		(engineTrees.collectMany { it.files as List } + (engineMixins.files as List) + (nativeFiles.files.findAll { it.exists() } as List)).each { scan(it, forbidden, 'not allowed in engine code') }
+		(engineTrees.collectMany { it.files as List } + (engineMixins.files as List) + (engineDistant.files as List) + (nativeFiles.files.findAll { it.exists() } as List)).each { scan(it, forbidden, 'not allowed in engine code') }
 		pureTrees.collectMany { it.files as List }.each { scan(it, impure, 'not allowed in a pure package') }
 		if (problems) throw new GradleException("Engine provenance check failed (docs/research/engine-provenance.md):\n" + problems.join('\n'))
 		stamp.get().asFile.text = 'ok\n'
@@ -169,6 +173,7 @@ tasks.register('checkSodiumReleases') {
 	def sources = fileTree('src/main/java') {
 		include 'dev/mcms/shaders/runtime/terrain/**'
 		include 'dev/mcms/metal/mixin/SodiumEngine*.java'
+		include 'dev/mcms/metal/QuicksilverSodiumPage.java'
 		// E5 (review item 1): the shadow pass calls Sodium's globals update and the terrain traversal; a beta.1-only call
 		// there is a NoSuchMethodError in the game, so the shadow package compiles against beta.5 as well.
 		include 'dev/mcms/shaders/runtime/shadow/**'
@@ -179,6 +184,7 @@ tasks.register('checkSodiumReleases') {
 		def beta5 = configurations.mixinAuditSodiumBeta5.files.find { it.name.endsWith('.jar') && it.name.contains('v7Lw0h1m') }
 		if (beta5 == null) throw new GradleException('the beta.5 jar (v7Lw0h1m) is not in the mixinAuditSodiumBeta5 configuration')
 		def out = layout.buildDirectory.dir('checkSodiumReleases').get().asFile
+		if (out.exists()) out.deleteDir()
 		out.mkdirs()
 		def mainClasses = sourceSets.main.output.files.findAll { it.isDirectory() }.join(File.pathSeparator)
 		def pinJar = configurations.compileClasspath.files.find { it.name.endsWith('.jar') && it.name.contains('g6ju16VJ') }

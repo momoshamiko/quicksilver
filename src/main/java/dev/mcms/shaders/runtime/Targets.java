@@ -48,6 +48,15 @@ public final class Targets {
 		/** A 2D texture (mips levels, render target and shader read usage), or 0 when the device refused it. */
 		long create(int format, int width, int height, int mips);
 
+		/**
+		 * A 2D texture with optional {@code MTLTextureUsageShaderWrite}. Only targets actually written through an image
+		 * store ({@code colorimgN} / {@code shadowcolorimgN}) request shader-write usage; omitting it on all other color
+		 * targets preserves Apple Silicon lossless framebuffer compression, and depth formats never allow shader-write.
+		 */
+		default long create(int format, int width, int height, int mips, boolean shaderWrite) {
+			return create(format, width, height, mips);
+		}
+
 		/** Releases a handle this factory returned. */
 		default void release(long handle) {
 		}
@@ -90,6 +99,8 @@ public final class Targets {
 	private final int count;
 	/** Whether a target gets textures: the documented minimum (the first four) and every target a program uses. */
 	private final boolean[] made = new boolean[COLOR_TARGETS];
+	/** Whether a colour target is bound as a storage image ({@code colorimgN}) and therefore needs {@code ShaderWrite}. */
+	private final boolean[] imageWritten = new boolean[COLOR_TARGETS];
 	/** depthtex0 always; depthtex1/depthtex2 only when some program reads them ({@link #depth}). */
 	private final boolean[] depthWanted = new boolean[DEPTH_TARGETS];
 	/** The depth textures' handles (0 until created; index 0 is depthtex0, the live depth). */
@@ -140,6 +151,16 @@ public final class Targets {
 	public Targets(TargetUnion union, Map<String, ShaderProperties.BufferSize> bufferSizes, Set<Integer> used,
 			boolean depth1, boolean depth2, int mainWidth, int mainHeight, Textures textures,
 			@Nullable float[] fogColor, CustomImages customs) {
+		this(union, bufferSizes, used, Set.of(), depth1, depth2, mainWidth, mainHeight, textures, fogColor, customs);
+	}
+
+	/**
+	 * Lays the targets out for one dimension's program set, marking which colour targets need {@code ShaderWrite}
+	 * ({@code colorimgN} storage image bindings) so all other targets keep Apple Silicon lossless framebuffer compression.
+	 */
+	public Targets(TargetUnion union, Map<String, ShaderProperties.BufferSize> bufferSizes, Set<Integer> used,
+			Set<Integer> imageTargets, boolean depth1, boolean depth2, int mainWidth, int mainHeight, Textures textures,
+			@Nullable float[] fogColor, CustomImages customs) {
 		this.customs = customs;
 		this.union = union;
 		this.bufferSizes = bufferSizes;
@@ -156,9 +177,15 @@ public final class Targets {
 		for (int t : used) {
 			max = Math.max(max, t);
 		}
+		for (int t : imageTargets) {
+			if (t >= 0 && t < COLOR_TARGETS) {
+				max = Math.max(max, t);
+			}
+		}
 		this.count = max + 1;
 		for (int t = 0; t < this.count; t++) {
-			this.made[t] = t < MINIMUM_TARGETS || used.contains(t);
+			this.made[t] = t < MINIMUM_TARGETS || used.contains(t) || imageTargets.contains(t);
+			this.imageWritten[t] = imageTargets.contains(t);
 		}
 		for (int t = 0; t < this.count; t++) {
 			String word = union.colorFormats().get(t);
@@ -284,6 +311,16 @@ public final class Targets {
 		return this.count;
 	}
 
+	/** Whether target {@code target} allocates GPU textures (false for unused gap indices below {@link #count()}). */
+	public boolean made(int target) {
+		return target >= 0 && target < this.count && this.made[target];
+	}
+
+	/** Whether target {@code target} is bound as a storage image ({@code colorimgN}) and requests {@code ShaderWrite}. */
+	public boolean imageWritten(int target) {
+		return target >= 0 && target < this.count && this.imageWritten[target];
+	}
+
 	/** The raw MTLPixelFormat of one target. */
 	public int format(int target) {
 		return this.formats[target].format();
@@ -387,8 +424,9 @@ public final class Targets {
 				continue;
 			}
 			int mips = this.mips[t] ? mipLevels(this.width[t], this.height[t]) : 1;
+			boolean shaderWrite = this.imageWritten[t];
 			for (int side = 0; side < 2; side++) {
-				this.handles[t][side] = this.textures.create(this.formats[t].format(), this.width[t], this.height[t], mips);
+				this.handles[t][side] = this.textures.create(this.formats[t].format(), this.width[t], this.height[t], mips, shaderWrite);
 				if (this.handles[t][side] == 0) {
 					releaseHandles(t, side);
 					return false;
@@ -399,7 +437,7 @@ public final class Targets {
 			if (!this.depthWanted[d]) {
 				continue;
 			}
-			this.depths[d] = this.textures.create(TargetFormats.DEPTH32_FLOAT, this.mainWidth, this.mainHeight, 1);
+			this.depths[d] = this.textures.create(TargetFormats.DEPTH32_FLOAT, this.mainWidth, this.mainHeight, 1, false);
 			if (this.depths[d] == 0) {
 				releaseDepths();
 				releaseHandles(this.count - 1, 2);
@@ -408,7 +446,7 @@ public final class Targets {
 		}
 		if (this.distantWanted) {
 			for (int d = 0; d < this.distantDepths.length; d++) {
-				this.distantDepths[d] = this.textures.create(TargetFormats.DEPTH32_FLOAT, this.mainWidth, this.mainHeight, 1);
+				this.distantDepths[d] = this.textures.create(TargetFormats.DEPTH32_FLOAT, this.mainWidth, this.mainHeight, 1, false);
 				if (this.distantDepths[d] == 0) {
 					releaseDepths();
 					releaseDistantDepths();
@@ -419,9 +457,9 @@ public final class Targets {
 		}
 		if (this.upscaleFormat >= 0) {
 			// Render-target and shader-read usage, private: what the final pass writes and MetalFX's spatial scaler reads.
-			this.upscaleInput = this.textures.create(this.upscaleFormat, this.mainWidth, this.mainHeight, 1);
+			this.upscaleInput = this.textures.create(this.upscaleFormat, this.mainWidth, this.mainHeight, 1, false);
 			this.overlayDepth = this.upscaleInput == 0 ? 0
-				: this.textures.create(TargetFormats.DEPTH32_FLOAT, this.mainWidth, this.mainHeight, 1);
+				: this.textures.create(TargetFormats.DEPTH32_FLOAT, this.mainWidth, this.mainHeight, 1, false);
 			if (this.upscaleInput == 0 || this.overlayDepth == 0) {
 				releaseUpscale();
 				releaseDepths();
@@ -519,10 +557,17 @@ public final class Targets {
 		return new Textures() {
 			@Override
 			public long create(int format, int width, int height, int mips) {
+				return create(format, width, height, mips, false);
+			}
+
+			@Override
+			public long create(int format, int width, int height, int mips, boolean shaderWrite) {
+				int usage = dev.mcms.shaders.metal.ShaderNative.USAGE_SHADER_READ | 4 /* MTLTextureUsageRenderTarget */;
+				if (shaderWrite && format != TargetFormats.DEPTH32_FLOAT) {
+					usage |= dev.mcms.shaders.metal.ShaderNative.USAGE_SHADER_WRITE;
+				}
 				return dev.mcms.shaders.metal.ShaderNative.textureNew(ctx, format,
-					dev.mcms.shaders.metal.ShaderNative.TYPE_2D, width, height, 1, mips,
-					dev.mcms.shaders.metal.ShaderNative.USAGE_SHADER_READ | dev.mcms.shaders.metal.ShaderNative.USAGE_SHADER_WRITE
-						| 4 /* MTLTextureUsageRenderTarget */,
+					dev.mcms.shaders.metal.ShaderNative.TYPE_2D, width, height, 1, mips, usage,
 					dev.mcms.shaders.metal.ShaderNative.STORAGE_PRIVATE);
 			}
 

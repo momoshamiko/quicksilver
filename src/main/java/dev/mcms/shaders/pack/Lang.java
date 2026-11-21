@@ -48,7 +48,7 @@ public record Lang(String id, Optional<String> file, Map<String, String> entries
 		Properties p = new Properties();
 		try {
 			p.load(new StringReader(text.get()));
-		} catch (java.io.IOException e) {
+		} catch (java.io.IOException | IllegalArgumentException e) {
 			return new Lang(wanted, Optional.empty(), Map.of());
 		}
 		Map<String, String> entries = new TreeMap<>();

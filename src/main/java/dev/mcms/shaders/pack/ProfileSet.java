@@ -121,6 +121,27 @@ public final class ProfileSet {
 	}
 
 	/**
+	 * Applies {@code name} onto {@code current}: resets every option touched by any profile in this set back to its
+	 * catalog default, then overlays the target profile's settings. Options that no profile touches keep the player's
+	 * manual values, while switching from a higher profile (e.g. ULTRA) to a lower one (e.g. HIGH) leaves no leftover
+	 * higher-profile keys behind.
+	 */
+	public OptionValues apply(OptionValues current, String name) {
+		OptionValues defaults = OptionValues.defaults(catalog);
+		Map<String, String> changes = new LinkedHashMap<>();
+		for (String other : profiles.keySet()) {
+			for (String key : resolve(other).settings().keySet()) {
+				String def = defaults.get(key);
+				if (def != null) {
+					changes.put(key, def);
+				}
+			}
+		}
+		changes.putAll(resolve(name).settings());
+		return current.with(catalog, changes);
+	}
+
+	/**
 	 * The current profile: the one whose settings match the option values. When several match, the one with more settings
 	 * wins, then the first in the file. Empty when none matches ("Custom").
 	 */

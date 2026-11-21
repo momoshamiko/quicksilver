@@ -159,6 +159,11 @@ final class MetalEncoder implements CommandEncoderBackend {
 		return this.submitIndex == TRACE_SUBMIT;
 	}
 
+	/** Monotonic counter incremented on each {@link #submit()}; transient slices remain valid within one submit. */
+	long submitIndex() {
+		return this.submitIndex;
+	}
+
 	/**
 	 * -Dmcms.metal.frameDepthDiscard: at a submit that presented (the frame's end), the main render target's depth is not written back
 	 * (its open encoder stores it 'dontCare'). Vanilla clears the main color and depth unconditionally at the start of every frame
@@ -242,9 +247,13 @@ final class MetalEncoder implements CommandEncoderBackend {
 			long s = samples;
 			int n = sampleCount;
 			if (ENC_LOG) {
-				long submit = this.submitIndex;
-				String[] labels = this.encLabels;
-				this.afterThisFrame.add(() -> FrameLog.encoders(this.ctx, submit, s, n, labels));
+				if (FrameLog.ON) {
+					long submit = this.submitIndex;
+					String[] labels = this.encLabels;
+					this.afterThisFrame.add(() -> FrameLog.encoders(this.ctx, submit, s, n, labels));
+				} else {
+					this.afterThisFrame.add(() -> Native.release(s));
+				}
 			} else {
 				this.afterThisFrame.add(() -> this.accumulateProfile(cmd, s, n));
 			}
@@ -350,6 +359,14 @@ final class MetalEncoder implements CommandEncoderBackend {
 
 	void waitIdle() {
 		while (!this.inFlight.isEmpty()) this.retire(this.inFlight.poll());
+	}
+
+	/** Runs deferred release callbacks queued since the last submit; call only after {@link #waitIdle()} during shutdown. */
+	void drainPendingReleases() {
+		if (this.afterThisFrame.isEmpty()) return;
+		List<Runnable> pending = this.afterThisFrame;
+		this.afterThisFrame = new ArrayList<>();
+		pending.forEach(Runnable::run);
 	}
 
 	@Override
@@ -801,7 +818,9 @@ final class MetalEncoder implements CommandEncoderBackend {
 		MetalTexture t = (MetalTexture) texture;
 		if (t.getMipLevels() != 1) {
 			// Rare (only mip chains); clear every level for real rather than tracking per-level state.
-			for (int mip = 0; mip < t.getMipLevels(); mip++) this.clearRegion(t, color, null, depth, 0, 0, t.getWidth(mip), t.getHeight(mip), mip);
+			MetalTexture colorTarget = color != null ? t : null;
+			MetalTexture depthTarget = !Double.isNaN(depth) ? t : null;
+			for (int mip = 0; mip < t.getMipLevels(); mip++) this.clearRegion(colorTarget, color, depthTarget, depth, 0, 0, t.getWidth(mip), t.getHeight(mip), mip);
 			return;
 		}
 		if (color != null) t.pendingColorClear = color;

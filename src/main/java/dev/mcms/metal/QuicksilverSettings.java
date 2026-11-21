@@ -209,7 +209,7 @@ public final class QuicksilverSettings implements PreLaunchEntrypoint {
 		// on Vulkan then [inference, not seen]). So it is set only when the game will draw with Quicksilver: Use Metal on (a launch
 		// flag's value, else the file's) and Metal possible here.
 		MetalSupport.Blocker blocker = MetalSupport.blocker();
-		boolean metalRuns = Boolean.parseBoolean(System.getProperty(METAL_PROPERTY, "true")) && blocker == null;
+		boolean metalRuns = MetalSupport.metalEnabled() && blocker == null;
 		if (hud && launchHud == null && metalRuns) {
 			hudAtLaunch = setenv(HUD_ENV, "1");
 			LOG.info("Quicksilver settings: hud=true from {}: {}", path, hudAtLaunch ? HUD_ENV + "=1 set before Metal starts" : "could not set " + HUD_ENV);
@@ -287,8 +287,8 @@ public final class QuicksilverSettings implements PreLaunchEntrypoint {
 			LOG.warn("Quicksilver settings: not saved, because the preLaunch entrypoint did not run");
 			return;
 		}
-		String text = "# Quicksilver settings: Options > Video Settings > Quicksilver, and the shader pack screen\n"
-			+ "# (docs/decisions/0002-settings-page.md). A -Dmcms.metal, -Dmcms.metal.colorspace, -Dmcms.shaders,\n"
+		String text = "# Quicksilver settings: Options > Video Settings > Quicksilver, and the shader pack screen.\n"
+			+ "# A -Dmcms.metal, -Dmcms.metal.colorspace, -Dmcms.shaders,\n"
 			+ "# -Dmcms.shaders.pack or -Dmcms.shaders.upscale launch flag wins over this file.\n"
 			+ "metal=" + metal + "\ncolors=" + colors.key() + "\nhud=" + hud + "\nshaders=" + (shaders ? "on" : "off") + "\n"
 			+ (shaderPack != null ? "shaderPack=" + escapeValue(shaderPack) + "\n" : "") + "handDepth=" + handDepth + "\n"
@@ -299,9 +299,17 @@ public final class QuicksilverSettings implements PreLaunchEntrypoint {
 			Path tmp = Files.createTempFile(dir, "quicksilver", ".tmp");
 			try {
 				// createTempFile makes the file readable by its owner only; a config file is readable by everyone, as the game's are
-				Files.setPosixFilePermissions(tmp, PosixFilePermissions.fromString("rw-r--r--"));
+				try {
+					Files.setPosixFilePermissions(tmp, PosixFilePermissions.fromString("rw-r--r--"));
+				} catch (UnsupportedOperationException notPosix) {
+					// ExFAT / non-POSIX volumes keep their own permissions
+				}
 				Files.writeString(tmp, text, StandardCharsets.UTF_8);
-				Files.move(tmp, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+				try {
+					Files.move(tmp, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+				} catch (java.nio.file.AtomicMoveNotSupportedException fallback) {
+					Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING);
+				}
 			} finally {
 				Files.deleteIfExists(tmp);
 			}
@@ -329,7 +337,7 @@ public final class QuicksilverSettings implements PreLaunchEntrypoint {
 
 	/** What the Use Metal row shows: the launch flag's value when there is one. */
 	static boolean metalShown() {
-		return metalFlag != null ? Boolean.parseBoolean(metalFlag) : metal;
+		return metalFlag != null ? MetalSupport.parseMetalWord(metalFlag) : metal;
 	}
 
 	static void setMetal(boolean value) {
@@ -339,7 +347,7 @@ public final class QuicksilverSettings implements PreLaunchEntrypoint {
 	/** What the Colors row shows: an untagged layer (none) looks Accurate (results/2026-10-17-colors). */
 	static Colors colorsShown() {
 		if (colorspaceFlag == null) return colors;
-		return switch (colorspaceFlag) {
+		return switch (colorspaceFlag.trim().toLowerCase(Locale.ROOT)) {
 			case "p3" -> Colors.VIVID;
 			case "srgb", "none" -> Colors.ACCURATE;
 			default -> colors;
@@ -369,6 +377,7 @@ public final class QuicksilverSettings implements PreLaunchEntrypoint {
 
 	/** The Metal HUD row: shows or hides the HUD at once when it was enabled at launch; otherwise from the next launch on. */
 	static void setHud(boolean value) {
+		if (hudFlag != null) return;
 		hud = value;
 		if (hudAtLaunch) MetalSurface.hudCurrent(value);
 	}
@@ -378,7 +387,11 @@ public final class QuicksilverSettings implements PreLaunchEntrypoint {
 	/** Whether the shader engine runs ({@code shaders}, or {@code -Dmcms.shaders}, which wins); off by default. */
 	public static boolean shadersOn() {
 		String flag = System.getProperty(SHADERS_PROPERTY);
-		return flag != null ? Boolean.TRUE.equals(parseOnOffWord(flag)) : shaders;
+		if (flag != null) {
+			Boolean parsed = parseOnOffWord(flag);
+			if (parsed != null) return parsed;
+		}
+		return shaders;
 	}
 
 	/** The selected pack's file or folder name under {@code shaderpacks/} ({@code shaderPack}, or {@code -Dmcms.shaders.pack}). */
@@ -397,9 +410,10 @@ public final class QuicksilverSettings implements PreLaunchEntrypoint {
 		if (!packLocked()) shaderPack = name == null || name.isBlank() ? null : name.trim();
 	}
 
-	/** Whether {@code -Dmcms.shaders} is set (a launch flag): the screens show its value, disabled. */
+	/** Whether {@code -Dmcms.shaders} is set to a valid on/off word (a launch flag): the screens show its value, disabled. */
 	public static boolean shadersLocked() {
-		return shadersFlag() != null;
+		String flag = shadersFlag();
+		return flag != null && parseOnOffWord(flag) != null;
 	}
 
 	/** The {@code -Dmcms.shaders} launch flag as written, or null when the launch command does not set it. */

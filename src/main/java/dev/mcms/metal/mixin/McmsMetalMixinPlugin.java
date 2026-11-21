@@ -1,5 +1,7 @@
+// Quicksilver: original code (ADR 0006), Apache-2.0.
 package dev.mcms.metal.mixin;
 
+import dev.mcms.metal.MetalSupport;
 import java.util.List;
 import java.util.Set;
 
@@ -10,19 +12,22 @@ import org.spongepowered.asm.mixin.extensibility.IMixinInfo;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Applies the Sodium and Distant Horizons mixins (simple names starting with "Sodium" or "DistantHorizons") only when
- * Fabric says the target mod is loaded, the Distant Horizons ones only for DH 3.3.4, the version they are written for; the
- * shader engine's own Sodium mixins ({@code SodiumEngine*}) only on a Sodium release of ADR 0007's allow-list. The engine's
- * other mixins ({@code Engine*}) and PreferredGraphicsApiMixin (the backend's entry) always apply; -Dmcms.metal=false is
- * the backend's opt-out. Vitrail cannot load beside Quicksilver: fabric.mod.json breaks it (E10).
+ * Applies Quicksilver's mixins only when Metal can run here ({@link MetalSupport#blocker()} is null and
+ * {@link MetalSupport#metalEnabled()} is true), so Quicksilver stays completely inert beside Iris, on unsupported platforms,
+ * or when Metal is turned off. Sodium and Distant Horizons mixins are further gated on the target mod being loaded and on
+ * the checked releases where internal fields/methods are hooked.
  *
  * <p>Mixin calls this plugin while it prepares the configs, before the game's classes load. So the plugin touches no game,
- * Sodium or renderpearl class: it asks Fabric and the ADR 0007 gate only. The engine's terrain registration runs later,
- * from {@code SodiumEngineStartMixin} (E4-B review item 1).
+ * Sodium or renderpearl class: it asks Fabric, {@link MetalSupport}, and the ADR 0007 gate only. The engine's terrain
+ * registration runs later, from {@code SodiumEngineStartMixin} (E4-B review item 1).
  */
 public final class McmsMetalMixinPlugin implements IMixinConfigPlugin {
 	/** Whether the "release not on the allow-list" ERROR was printed (once per game, not once per mixin). */
 	private static boolean sodiumReleaseErrorPrinted;
+	/** Whether the "mixins skipped because Metal is off/blocked" line was printed once. */
+	private static boolean metalOffPrinted;
+	/** Cached once per mixin-config prepare so quicksilver.properties is read at most once. */
+	private @Nullable Boolean metalAvailable;
 
 	@Override
 	public void onLoad(String mixinPackage) {
@@ -35,36 +40,67 @@ public final class McmsMetalMixinPlugin implements IMixinConfigPlugin {
 
 	@Override
 	public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
-		boolean apply;
 		String simpleName = mixinClassName.substring(mixinClassName.lastIndexOf('.') + 1);
-		if (simpleName.startsWith("Engine") || simpleName.startsWith("SodiumEngine")) {
-			// The shader engine's own mixins (plan.md E4; ADR 0007). The Sodium ones: only on the allow-list's checked
-			// releases. On any other release the engine stays off with one ERROR naming the release, and the game runs as
-			// without a pack.
-			String sodium = dev.mcms.shaders.runtime.terrain.SodiumAdapter.release();
-			apply = engineMixinApplies(simpleName, sodium);
-			if (simpleName.startsWith("SodiumEngine") && sodium != null
+		if (this.metalAvailable == null) {
+			this.metalAvailable = MetalSupport.blocker() == null && MetalSupport.metalEnabledForMixins();
+		}
+		if (!this.metalAvailable) {
+			if (!metalOffPrinted) {
+				metalOffPrinted = true;
+				System.out.println("[mcms-metal] Metal is off or unavailable; skipping all Quicksilver mixins");
+			}
+			return false;
+		}
+		String sodium = dev.mcms.shaders.runtime.terrain.SodiumAdapter.release();
+		boolean sodiumLoaded = FabricLoader.getInstance().isModLoaded("sodium");
+		String dhVersion = FabricLoader.getInstance().getModContainer("distanthorizons")
+			.map(mod -> mod.getMetadata().getVersion().getFriendlyString()).orElse(null);
+		boolean apply = mixinApplies(simpleName, sodium, dhVersion, sodiumLoaded, dhVersion != null, true);
+		if (simpleName.startsWith("SodiumEngine") && sodium != null
 				&& !dev.mcms.shaders.runtime.terrain.SodiumAdapter.allowedRelease(sodium) && !sodiumReleaseErrorPrinted) {
-				sodiumReleaseErrorPrinted = true;
-				System.out.println("[mcms-metal] [ERROR] Sodium " + sodium + " is not on the engine's allow-list "
-					+ "(ADR 0007), the engine's Sodium mixins stay off; the game runs without the shader engine");
-			}
-		} else if (simpleName.startsWith("Sodium")) {
-			apply = FabricLoader.getInstance().isModLoaded("sodium");
-		} else if (simpleName.startsWith("DistantHorizons")) {
-			// DH is no project pin. With defaultRequire 1, a version whose hooked call moved would stop the game at start, so
-			// these mixins apply to the version they are written for only (bench/mods.lock.json).
-			String version = FabricLoader.getInstance().getModContainer("distanthorizons")
-				.map(mod -> mod.getMetadata().getVersion().getFriendlyString()).orElse(null);
-			apply = "3.3.4".equals(version);
-			if (version != null && !apply) {
-				System.out.println("[mcms-metal] Distant Horizons " + version + " is not 3.3.4, the version " + simpleName + " is written for");
-			}
-		} else {
-			apply = true; // PreferredGraphicsApiMixin: checks -Dmcms.metal=false itself
+			sodiumReleaseErrorPrinted = true;
+			System.out.println("[mcms-metal] [ERROR] Sodium " + sodium + " is not on the engine's allow-list "
+				+ "(ADR 0007), the engine's Sodium mixins stay off; the game runs without the shader engine");
+		}
+		if (simpleName.startsWith("DistantHorizons") && !"DistantHorizonsRenderApiMixin".equals(simpleName)
+				&& dhVersion != null && !apply) {
+			System.out.println("[mcms-metal] Distant Horizons " + dhVersion + " is not 3.3.4, the version " + simpleName + " is written for");
 		}
 		System.out.println("[mcms-metal] " + simpleName + (apply ? " applied" : " off"));
 		return apply;
+	}
+
+	/**
+	 * Pure mixin-application decision for tests and {@link #shouldApplyMixin}.
+	 */
+	static boolean mixinApplies(String simpleName, @Nullable String sodiumRelease, @Nullable String dhVersion,
+			boolean sodiumLoaded, boolean dhLoaded, boolean metalAvailable) {
+		if (!metalAvailable) {
+			return false;
+		}
+		if (simpleName.startsWith("Engine") || simpleName.startsWith("SodiumEngine")) {
+			return engineMixinApplies(simpleName, sodiumRelease);
+		}
+		if (simpleName.equals("SodiumBufferArenaAccessor")
+				|| simpleName.equals("SodiumSharedArenaMixin")
+				|| simpleName.equals("SodiumSingleOwnerArenaMixin")) {
+			// Internal BufferArena.textureId leak workaround: only apply on checked Sodium releases.
+			return sodiumLoaded && dev.mcms.shaders.runtime.terrain.SodiumAdapter.allowedRelease(sodiumRelease);
+		}
+		if (simpleName.startsWith("Sodium")) {
+			return sodiumLoaded;
+		}
+		if (simpleName.equals("DistantHorizonsRenderApiMixin")) {
+			// Metal-as-Vulkan API detection applies across DH versions (guarded by require = 0).
+			return dhLoaded;
+		}
+		if (simpleName.startsWith("DistantHorizons")) {
+			if (!dhLoaded || dhVersion == null) return false;
+			int plus = dhVersion.indexOf('+');
+			String base = plus >= 0 ? dhVersion.substring(0, plus) : dhVersion;
+			return "3.3.4".equals(base);
+		}
+		return true; // PreferredGraphicsApiMixin
 	}
 
 	/**

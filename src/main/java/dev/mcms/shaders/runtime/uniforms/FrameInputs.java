@@ -162,7 +162,7 @@ public record FrameInputs(
 		var lightmap = mc.gameRenderer.gameRenderState().lightmapRenderState;
 		// Camera (CameraRenderState, filled for this frame).
 		var pos = cam.pos;
-		var eye = player.getEyePosition();
+		var eye = player.getEyePosition(partialTick);
 		var look = mc.gameRenderer.mainCamera().forwardVector();
 		var viewRotation = new org.joml.Matrix4f(cam.viewRotationMatrix);
 		float fovY = mc.gameRenderer.mainCamera().getFov();

@@ -95,7 +95,10 @@ public final class StorageBuffers implements AutoCloseable {
 		MemorySegment contents = MemorySegment.ofAddress(MetalBridge.bufferContents(handle)).reinterpret(size);
 		contents.fill((byte) 0);
 		if (spec.initial() != null) {
-			MemorySegment.copy(spec.initial(), 0, contents, ValueLayout.JAVA_BYTE, 0, spec.initial().length);
+			int copyLen = (int) Math.min(spec.initial().length, size);
+			if (copyLen > 0) {
+				MemorySegment.copy(spec.initial(), 0, contents, ValueLayout.JAVA_BYTE, 0, copyLen);
+			}
 		}
 		this.handles[spec.index()] = handle;
 		this.sizes[spec.index()] = size;

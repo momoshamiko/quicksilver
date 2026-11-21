@@ -22,7 +22,7 @@ import org.spongepowered.asm.mixin.injection.At;
  */
 @Mixin(MinecraftRenderWrapper.class)
 abstract class DistantHorizonsRenderApiMixin {
-	@WrapOperation(method = "getMcRenderingApi", at = @At(value = "INVOKE", target = "Ljava/lang/String;equalsIgnoreCase(Ljava/lang/String;)Z"))
+	@WrapOperation(method = "getMcRenderingApi", at = @At(value = "INVOKE", target = "Ljava/lang/String;equalsIgnoreCase(Ljava/lang/String;)Z"), require = 0)
 	private boolean mcmsMetal$metalCountsAsVulkan(String backendName, String vulkan, Operation<Boolean> original) {
 		return original.call(backendName, vulkan) || "Metal".equals(backendName);
 	}

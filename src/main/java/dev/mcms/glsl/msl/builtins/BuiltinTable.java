@@ -114,6 +114,9 @@ public final class BuiltinTable {
 		if (call.name().equals("barrier") && stage != Stage.COMPUTE)
 			return new Mapping.Unsupported("GLSL barrier() is defined for compute and tessellation control shaders only; "
 				+ "the engine has no tessellation stage (GLSL 4.60 8.16)");
+		if (stage != Stage.COMPUTE && (call.name().startsWith("memoryBarrier") || call.name().equals("groupMemoryBarrier")))
+			// MSL forbids threadgroup_barrier outside compute kernels; GLSL memoryBarrier* in vertex/fragment is an ordering hint.
+			return Mapping.Mapped.of("((void)0)");
 		if (isDouble(call))
 			return new Mapping.Unsupported("no double precision on Apple GPUs (GLSL 4.60 double overload)");
 		Mapper mapper = mappers.get(call.name());

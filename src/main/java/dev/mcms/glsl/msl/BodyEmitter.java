@@ -392,6 +392,20 @@ final class BodyEmitter {
 			}
 			return MslTypes.structName(st) + "{" + String.join(", ", items) + "}";
 		}
+		if (type instanceof VectorType vt) {
+			GlslType comp = ScalarType.of(vt.component());
+			for (Expr item : list.items()) {
+				items.add(item instanceof InitializerList nested ? initList(nested, comp) : expr(item));
+			}
+			return MslTypes.vector(vt) + "(" + String.join(", ", items) + ")";
+		}
+		if (type instanceof MatrixType mt) {
+			GlslType col = mt.columnType();
+			for (Expr item : list.items()) {
+				items.add(item instanceof InitializerList nested ? initList(nested, col) : expr(item));
+			}
+			return MslTypes.matrix(mt) + "(" + String.join(", ", items) + ")";
+		}
 		throw new IllegalStateException("initializer list for " + type);
 	}
 
@@ -557,7 +571,8 @@ final class BodyEmitter {
 				return equality(b, lt, l, r);
 			case SHL:
 			case SHR:
-				if (lt instanceof VectorType v && rt instanceof ScalarType) {
+				if (lt instanceof VectorType v && (rt instanceof ScalarType
+						|| (rt instanceof VectorType rv && rv.component() != v.component()))) {
 					r = MslTypes.vector(v) + "(" + r + ")";
 				}
 				return "(" + l + " " + b.op().word() + " " + r + ")";
@@ -603,13 +618,15 @@ final class BodyEmitter {
 			return "(" + target + " = " + value + ")";
 		}
 		String op = a.op().word().substring(0, a.op().word().length() - 1);
+		if ((op.equals("<<") || op.equals(">>")) && tt instanceof VectorType v) {
+			GlslType vt = sema.typeOf(a.value());
+			if (vt instanceof ScalarType || (vt instanceof VectorType rv && rv.component() != v.component())) {
+				value = MslTypes.vector(v) + "(" + value + ")";
+			}
+		}
 		if (isPackedMember(a.target())) {
 			String widened = MslTypes.vector((VectorType) tt) + "(" + target + ")";
 			return "(" + target + " = " + MslTypes.vector((VectorType) tt) + "(" + widened + " " + op + " " + value + "))";
-		}
-		if ((op.equals("<<") || op.equals(">>")) && tt instanceof VectorType v
-				&& sema.typeOf(a.value()) instanceof ScalarType) {
-			value = MslTypes.vector(v) + "(" + value + ")";
 		}
 		if (needsValueForm(a)) {
 			if (pure(a.target())) {
@@ -812,13 +829,15 @@ final class BodyEmitter {
 		return stage.functionName(f) + "(" + String.join(", ", args) + ")";
 	}
 
-	/** True when MSL can bind the expression to a reference: a variable, a struct field or an array element of one. */
+	/** True when MSL can bind the expression to a thread reference: a thread-space variable, struct field or array element. */
 	private boolean referenceable(Expr e) {
 		if (isPackedMember(e)) {
 			return false;
 		}
 		return switch (e) {
-			case Ident i -> true;
+			case Ident i -> sema.symbolOf(i) instanceof VariableSymbol v
+				&& !v.quals().isBuffer() && !v.quals().isShared()
+				&& !(v.declaration() instanceof dev.mcms.glsl.ast.InterfaceBlock);
 			case FieldExpr f -> sema.typeOf(f.base()) instanceof StructType && referenceable(f.base());
 			case IndexExpr ix -> !(sema.typeOf(ix.base()) instanceof VectorType
 				|| sema.typeOf(ix.base()) instanceof MatrixType) && referenceable(ix.base());
@@ -906,7 +925,16 @@ final class BodyEmitter {
 		List<Expr> args = c.args();
 		switch (target) {
 			case ScalarType s -> {
-				return MslTypes.scalar(s.kind()) + "(" + expr(args.get(0)) + ")";
+				Expr arg = args.get(0);
+				GlslType at = sema.typeOf(arg);
+				String text = expr(arg);
+				if (at instanceof VectorType) {
+					return MslTypes.scalar(s.kind()) + "((" + text + ").x)";
+				}
+				if (at instanceof MatrixType) {
+					return MslTypes.scalar(s.kind()) + "((" + text + ")[0][0])";
+				}
+				return MslTypes.scalar(s.kind()) + "(" + text + ")";
 			}
 			case VectorType v -> {
 				int n = v.size();
@@ -924,8 +952,45 @@ final class BodyEmitter {
 					}
 				}
 				List<String> parts = new ArrayList<>();
+				int remaining = n;
 				for (Expr a : args) {
-					parts.add(convertComponents(a, v.component()));
+					if (remaining <= 0) {
+						break;
+					}
+					GlslType at = sema.typeOf(a);
+					if (at instanceof VectorType av && av.size() > remaining) {
+						String slice = "(" + expr(a) + ")." + "xyzw".substring(0, remaining);
+						if (av.component() != v.component()) {
+							GlslType to = remaining == 1 ? ScalarType.of(v.component())
+								: VectorType.of(v.component(), remaining);
+							slice = castTo(to, slice);
+						}
+						parts.add(slice);
+						remaining = 0;
+					} else if (at instanceof MatrixType am) {
+						String matText = expr(a);
+						int take = Math.min(am.cols() * am.rows(), remaining);
+						String slice;
+						if (take <= am.rows()) {
+							slice = "(" + matText + ")[0]";
+							if (take < am.rows()) {
+								slice = slice + "." + "xyzw".substring(0, take);
+							}
+						} else {
+							stage.requirePrelude("matToVec");
+							slice = "qs::matToVec<" + take + ">(" + matText + ")";
+						}
+						if (am.component() != v.component()) {
+							GlslType to = take == 1 ? ScalarType.of(v.component())
+								: VectorType.of(v.component(), take);
+							slice = castTo(to, slice);
+						}
+						parts.add(slice);
+						remaining -= take;
+					} else {
+						parts.add(convertComponents(a, v.component()));
+						remaining -= at instanceof VectorType av ? av.size() : 1;
+					}
 				}
 				return MslTypes.vector(v) + "(" + String.join(", ", parts) + ")";
 			}

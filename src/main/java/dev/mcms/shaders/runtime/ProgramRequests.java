@@ -58,8 +58,10 @@ public final class ProgramRequests {
 	/** The engine's uniform block slots (buffer indices), above the pack's own blocks (0..). */
 	public static final int FRAME_SLOT = EngineSlots.FRAME, DRAW_SLOT = EngineSlots.DRAW, CUSTOM_SLOT = EngineSlots.CUSTOM;
 
+	private static final Pattern COMMENTS = Pattern.compile("/\\*.*?\\*/|//[^\\n]*", Pattern.DOTALL);
 	private static final Pattern RESOURCE_DECL = Pattern.compile(
-		"(?:layout\\s*\\([^)]*\\)\\s*)?uniform\\s+(?:layout\\s*\\([^)]*\\)\\s*)?(?:(?:highp|mediump|lowp)\\s+)?"
+		"(?:(?:layout\\s*\\([^)]*\\)|readonly|writeonly|coherent|volatile|restrict)\\s+)*"
+			+ "uniform\\s+(?:(?:layout\\s*\\([^)]*\\)|readonly|writeonly|coherent|volatile|restrict|highp|mediump|lowp)\\s+)*"
 			+ "((?:i|u)?sampler\\w+|(?:i|u)?image\\w+)\\s+([\\w\\s,]+?)\\s*[;\\[]");
 	private static final Logger LOG = LoggerFactory.getLogger("Quicksilver");
 	/** The QsDraw member that flags a draw with no per-vertex id records (ProgramRequest.PerVertexIds). */
@@ -285,7 +287,7 @@ public final class ProgramRequests {
 					TargetFormats.of(colorFormats.get(target), target).outputComponents()));
 			}
 		}
-		Matcher sm = RESOURCE_DECL.matcher(all);
+		Matcher sm = RESOURCE_DECL.matcher(COMMENTS.matcher(all).replaceAll(" "));
 		List<TextureBinding> textures = new ArrayList<>();
 		List<ProgramRequest.ImageBinding> images = new ArrayList<>();
 		int slot = 0;
@@ -479,7 +481,7 @@ public final class ProgramRequests {
 					TargetFormats.of(colorFormats.get(target), target).outputComponents()));
 			}
 		}
-		Matcher sm = RESOURCE_DECL.matcher(all);
+		Matcher sm = RESOURCE_DECL.matcher(COMMENTS.matcher(all).replaceAll(" "));
 		List<TextureBinding> textures = new ArrayList<>();
 		List<ProgramRequest.ImageBinding> images = new ArrayList<>();
 		int slot = 0, samplerSlot = GAME_SAMPLER_BASE;

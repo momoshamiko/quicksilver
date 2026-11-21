@@ -39,6 +39,7 @@ final class Native {
 
 	private static final MethodHandle CREATE = fn("mc_create", false, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle MAX_BUFFER_LENGTH = fn("mc_max_buffer_length", true, JAVA_LONG, JAVA_LONG);
+	private static final MethodHandle RECOMMENDED_WORKING_SET = fn("mc_recommended_working_set", true, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle RELEASE = fn("mc_release", false, null, JAVA_LONG);
 	private static final MethodHandle BUFFER_NEW = fn("mc_buffer_new", false, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle BUFFER_PRIVATE = fn("mc_buffer_private", false, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG);
@@ -126,6 +127,7 @@ final class Native {
 	private static final MethodHandle PRESENT_SKIPPED = fn("mc_present_skipped", false, JAVA_LONG);
 	private static final MethodHandle PRESENT_QUEUED_ACQUIRE = fn("mc_present_queued_acquire", false, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle PRESENT_DROPPED = fn("mc_present_dropped", false, JAVA_LONG);
+	private static final MethodHandle PRESENT_STOP = fn("mc_present_stop", false, null);
 	private static final MethodHandle PACE_ADAPT = fn("mc_pace_adapt", false, null, JAVA_INT);
 	private static final MethodHandle PACE_EXTRA_MS = fn("mc_pace_extra_ms", false, JAVA_DOUBLE);
 	private static final MethodHandle PACE = fn("mc_pace", false, JAVA_INT, JAVA_DOUBLE);
@@ -164,18 +166,20 @@ final class Native {
 	private Native() {
 	}
 
-	/** The loaded libmcmetal, for MetalBridge: the shaderpack runtime binds its own functions (mcpack.m) from the same image. */
+	/** The loaded libmcmsmetal, for MetalBridge: the shader engine binds its own functions (mcshaders.m) from the same image. */
 	static SymbolLookup lookup() {
 		return LIB;
 	}
 
 	private static Path extract() {
 		try (InputStream in = Native.class.getResourceAsStream("/natives/libmcmsmetal.dylib")) {
+			if (in == null) throw new IllegalStateException("missing bundled /natives/libmcmsmetal.dylib");
 			Path dir = Files.createTempDirectory("mcmsmetal");
 			Path lib = dir.resolve("libmcmsmetal.dylib");
 			Files.copy(in, lib, StandardCopyOption.REPLACE_EXISTING);
-			lib.toFile().deleteOnExit();
+			// deleteOnExit runs in LIFO order: register the directory first so the file is deleted before it.
 			dir.toFile().deleteOnExit();
+			lib.toFile().deleteOnExit();
 			return lib;
 		} catch (IOException e) {
 			throw new IllegalStateException("can't extract libmcmsmetal.dylib", e);
@@ -192,6 +196,7 @@ final class Native {
 
 	static long create(long name, int nameCap, long err, int errCap) { try { long c = (long) CREATE.invokeExact(name, nameCap, err, errCap); return c; } catch (Throwable t) { throw rethrow(t); } }
 	static long maxBufferLength(long ctx) { try { return (long) MAX_BUFFER_LENGTH.invokeExact(ctx); } catch (Throwable t) { throw rethrow(t); } }
+	static long recommendedWorkingSet(long ctx) { try { return (long) RECOMMENDED_WORKING_SET.invokeExact(ctx); } catch (Throwable t) { throw rethrow(t); } }
 	static void release(long obj) { try { RELEASE.invokeExact(obj); } catch (Throwable t) { throw rethrow(t); } }
 	static long bufferNew(long ctx, long size) { try { return (long) BUFFER_NEW.invokeExact(ctx, size); } catch (Throwable t) { throw rethrow(t); } }
 	static long bufferPrivate(long ctx, long src, long size) { try { return (long) BUFFER_PRIVATE.invokeExact(ctx, src, size); } catch (Throwable t) { throw rethrow(t); } }
@@ -290,6 +295,7 @@ final class Native {
 	static void paceAdapt(int on) { try { PACE_ADAPT.invokeExact(on); } catch (Throwable t) { throw rethrow(t); } }
 	static double paceExtraMs() { try { return (double) PACE_EXTRA_MS.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static long presentDropped() { try { return (long) PRESENT_DROPPED.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
+	static void presentStop() { try { PRESENT_STOP.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static void sleepPrecise(long ns) { try { SLEEP_PRECISE.invokeExact(ns); } catch (Throwable t) { throw rethrow(t); } }
 	static boolean pace(double marginSeconds) { try { return (int) PACE.invokeExact(marginSeconds) != 0; } catch (Throwable t) { throw rethrow(t); } }
 	static double vsyncWait(double offsetSeconds) { try { return (double) VSYNC_WAIT.invokeExact(offsetSeconds); } catch (Throwable t) { throw rethrow(t); } }

@@ -876,7 +876,7 @@ public final class ProgramEmitter {
 	 */
 	private String alphaTest(StageEmitter fs, AlphaTest at) {
 		String op = switch (at.func()) {
-			case "ALWAYS" -> null;
+			case "ALWAYS", "GL_ALWAYS" -> null;
 			case "NEVER" -> "NEVER";
 			case "LESS" -> "<";
 			case "LEQUAL" -> "<=";

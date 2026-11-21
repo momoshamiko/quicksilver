@@ -1,9 +1,12 @@
 // Quicksilver: original code (ADR 0006), Apache-2.0.
 package dev.mcms.metal.mixin;
 
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.mojang.renderpearl.api.textures.GpuTextureView;
 import dev.mcms.shaders.runtime.Engine;
 import dev.mcms.shaders.runtime.blockentity.BlockEntityRouter;
+import dev.mcms.shaders.runtime.entities.EntityCapture;
 import dev.mcms.shaders.runtime.hand.HandRenderer;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
@@ -13,7 +16,6 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
@@ -62,6 +64,9 @@ abstract class EngineHandGameRendererMixin {
 				BlockEntityRouter.get().onBufferEndFrame();
 			}
 		}
+		// Reset global per-frame entity/item ID capture once at the real end of frame, never inside an arbitrary
+		// modded StagedVertexBuffer.endFrame() call mid-frame.
+		EntityCapture.frameEnded();
 	}
 
 	/** A hand frame the translucent draw never ran (guards, early exits) closes here, beside E3's after-level hook
@@ -75,13 +80,13 @@ abstract class EngineHandGameRendererMixin {
 		BlockEntityRouter.get().afterLevel();
 	}
 
-	@Redirect(method = "render3dHud", at = @At(value = "INVOKE",
+	@WrapOperation(method = "render3dHud", at = @At(value = "INVOKE",
 		target = "Lnet/minecraft/client/renderer/GameRenderer;renderItemInHand(Lnet/minecraft/client/renderer/state/level/CameraRenderState;Lnet/minecraft/client/renderer/state/level/PlayerRenderState;Lcom/mojang/renderpearl/api/textures/GpuTextureView;)V",
 		ordinal = 0))
 	private void mcms$engineHand(GameRenderer self, CameraRenderState camera, PlayerRenderState player,
-			GpuTextureView depthView) {
+			GpuTextureView depthView, Operation<Void> original) {
 		if (!Engine.get().drawsHand()) {
-			((EngineHandGameRendererAccessor) self).mcms$renderItemInHand(camera, player, depthView);
+			original.call(self, camera, player, depthView);
 			return;
 		}
 		// The frame was prepared at LevelRenderer.render bytecode 770; this draw closes it, and the after-level

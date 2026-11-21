@@ -219,6 +219,8 @@ public final class Engine {
 	private boolean standInClearKnown;
 	/** This frame's encoder object (the BlockUpload and PassBlocks read it; set at the frame's start). */
 	private @Nullable Object frameEncoder;
+	/** Bumped whenever frame uniforms, custom uniforms, or active set state changes so PassBlocks avoids redundant re-uploads. */
+	private int frameSerial;
 	private @Nullable Targets targets;
 	private @Nullable ShadowTargets shadowTargets;
 	/** E5: the shadow frame's operations (the production binding), its run and its content switches; set with the set's shadows. */
@@ -416,6 +418,10 @@ public final class Engine {
 	 */
 	public static @Nullable String cannotRunReason() {
 		if (backend() == null) {
+			String blocked = dev.mcms.metal.MetalSupport.blockerMessage();
+			if (blocked != null) {
+				return blocked;
+			}
 			return "The game is not running on Metal now";
 		}
 		return null;
@@ -474,6 +480,10 @@ public final class Engine {
 			}
 			beginLoad(mc);
 		}
+		Object currentEncoder = backend();
+		if (currentEncoder != null) {
+			this.frameEncoder = currentEncoder;
+		}
 		if (this.pendingModel.get() != null) {
 			takePendingModel(mc, surfaceOf(main));
 		}
@@ -483,6 +493,9 @@ public final class Engine {
 			if (renderSize(main.width, scale) != this.targetWidth || renderSize(main.height, scale) != this.targetHeight
 					|| scale != this.targetScale) {
 				resizeTargets(main.width, main.height, scale, MetalBridge.pixelFormat(main.getColorTexture().getFormat()));
+				if (this.state != State.ACTIVE || this.targets == null) {
+					return;
+				}
 			}
 			String dimension = dimensionOf(mc);
 			if (!dimension.equals(this.loadedDimension)) {
@@ -659,7 +672,8 @@ public final class Engine {
 	private void upscale(long enc, Object encoder, EngineFrame frame, long input, GpuTexture colour, int width, int height) {
 		MetalBridge.dropPendingClear(encoder, colour);
 		long output = MetalBridge.textureHandle(colour);
-		if (!this.upscaleFallback && !"bilinear".equals(UPSCALER)) {
+		if (!this.upscaleFallback && !"bilinear".equals(UPSCALER)
+				&& width > 0 && height > 0 && this.targetWidth > 0 && this.targetHeight > 0) {
 			this.spatialUsed = true;
 			int result = ShaderNative.spatialScale(enc, input, output, "refuse".equals(UPSCALER));
 			if (result >= 0) {
@@ -1121,11 +1135,21 @@ public final class Engine {
 		private @Nullable ByteBuffer distantBytes;
 		private final long[] distantHolder = new long[2];
 		private int distantStamp = -1;
+		private @Nullable Object lastEncoder;
+		private long lastSubmitIndex = Long.MIN_VALUE;
+		private int lastFrameSerial = -1;
 
-		/** A new frame begins: every slice refreshes at its first pass of this frame. */
+		/** A new frame or submit begins: refresh slices only when the encoder, submit index, or frame uniform state changed. */
 		void beginFrame(Object encoder) {
 			Engine.this.frameEncoder = encoder;
-			this.stamp++;
+			long sub = MetalBridge.submitIndex(encoder);
+			int serial = Engine.this.frameSerial;
+			if (sub < 0L || encoder != this.lastEncoder || sub != this.lastSubmitIndex || serial != this.lastFrameSerial) {
+				this.lastEncoder = encoder;
+				this.lastSubmitIndex = sub;
+				this.lastFrameSerial = serial;
+				this.stamp++;
+			}
 		}
 
 		@Override
@@ -1260,6 +1284,7 @@ public final class Engine {
 		if (this.custom != null) {
 			this.custom.update(uniforms);
 		}
+		this.frameSerial++;
 	}
 
 	/** The backend's encoder object, or null when the game does not draw with our Metal backend. */
@@ -1281,6 +1306,7 @@ public final class Engine {
 		DrawLog.stop();  // E4 review item 13: an open draw-log block ends (the frame hook does not run while off)
 		releaseGpu();
 		this.state = State.OFF;
+		this.frameSerial++;
 		this.packName = null;
 		this.failureReason = null;
 		this.failureToastShown = false;
@@ -1556,9 +1582,15 @@ public final class Engine {
 			} catch (Throwable t) {
 				this.loading.remove(folder, gen);  // only this request's marker (D3: a later request's marker stays)
 				if (this.generation.get() == gen) {
-					LOG.error("[mcms-shaders] shader pack {} failed to compile: {} (the vanilla picture shows)", pack,
-						t.toString());
-					fail("the pack's programs could not be built: " + messageOf(t));
+					boolean activeForeground = foreground || folder.equals(this.foregroundFolder);
+					if (activeForeground) {
+						LOG.error("[mcms-shaders] shader pack {} failed to compile: {} (the vanilla picture shows)", pack,
+							t.toString());
+						fail("the pack's programs could not be built: " + messageOf(t));
+					} else {
+						LOG.warn("[mcms-shaders] background dimension {} of pack {} failed to compile: {} (active dimension keeps running)",
+							folder, pack, t.toString());
+					}
 				}
 			}
 		});
@@ -1593,9 +1625,15 @@ public final class Engine {
 			offer(gen, folder, set);
 			return;
 		}
-		Pending replaced = this.pendingSet.getAndSet(new Pending(gen, set));
+		Pending mine = new Pending(gen, set);
+		Pending replaced = this.pendingSet.getAndSet(mine);
 		if (replaced != null) {
 			this.releaser.accept(replaced.set());
+		}
+		// Close the check-then-set race against turnOff() / shutdown(): if the generation moved right before getAndSet,
+		// retract our entry and release the set immediately so it cannot leak past device close.
+		if (this.generation.get() != gen && this.pendingSet.compareAndSet(mine, null)) {
+			this.releaser.accept(set);
 		}
 	}
 
@@ -1706,6 +1744,35 @@ public final class Engine {
 	 * releases the set (it never became active).
 	 */
 	void install(DimensionSet set, Surface surface) {
+		try {
+			installInner(set, surface);
+		} catch (RuntimeException | LinkageError failure) {
+			fail("the pack could not start on the GPU: " + messageOf(failure));
+			LOG.error("[mcms-shaders] pack {} failed during render-thread install: {} (the vanilla picture shows)",
+				this.packName, failure.toString(), failure);
+			boolean ownedByActive = this.active == set;
+			releaseGpu();
+			if (!ownedByActive) {
+				this.releaser.accept(set);
+			}
+		}
+	}
+
+	private static boolean sodiumClassesPresent() {
+		try {
+			Class.forName("net.caffeinemc.mods.sodium.client.render.SodiumWorldRenderer", false,
+				Engine.class.getClassLoader());
+			return true;
+		} catch (ClassNotFoundException | LinkageError missing) {
+			return false;
+		}
+	}
+
+	private void installInner(DimensionSet set, Surface surface) {
+		Object currentEncoder = backend();
+		if (currentEncoder != null) {
+			this.frameEncoder = currentEncoder;
+		}
 		long ctx = surface.ctx();
 		long t0 = System.nanoTime();  // E9: the install's steps are timed (the reload's 130-150 ms frame, RIL-564)
 		// A set that lands after a background load starts its clock here, at its first drawn frame, as Iris's pipeline does (the
@@ -1870,6 +1937,7 @@ public final class Engine {
 		long tFrame = System.nanoTime();
 		this.active = set;
 		this.state = State.ACTIVE;
+		this.frameSerial++;
 		String folder = folderOf(set.dimension());
 		this.foregroundFolder = folder;
 		this.targetWidth = width;
@@ -1889,20 +1957,25 @@ public final class Engine {
 		// program off has no shadow pass (review item 1). The lists use the shadow camera's matrices as they were last updated:
 		// FrameUniforms updates them in the frame-start hook, after setupTerrain.
 		if (this.shadowTargets != null && !this.shadowTargets.shadowProgramOff() && this.worldDrawn && this.delegate != null) {
-			this.shadowDispatch = this.shadowDispatches.apply(this.delegate);
-			ShadowCamera shadowCamera = this.frameUniforms.shadow();
-			ShadowPassSequence.Content content = ShadowPassSequence.Content.of(this.model.properties());
-			this.shadowOps = new ShadowPassOps(shadowCamera, this.shadowTargets, built.shadowLayout(), this.delegate,
-				this.shadowDispatch);
-			this.shadowDriver = new ShadowFrameDriver(new ShadowFrame(this.shadowOps), content, ShadowLists::detach);
-			ShadowLists.attach(shadowCamera, content);
-			ShadowComposites.get().attach(enc -> {
-				EngineFrame active = this.frame;
-				Targets current = this.targets;
-				if (active != null && current != null) {
-					active.shadowComposite(enc, current, this.passBlocks);
-				}
-			});
+			if (!sodiumClassesPresent()) {
+				LOG.warn("[mcms-shaders] pack {} uses shadows, which require Sodium; shadow maps stay cleared without Sodium",
+					this.packName);
+			} else {
+				this.shadowDispatch = this.shadowDispatches.apply(this.delegate);
+				ShadowCamera shadowCamera = this.frameUniforms.shadow();
+				ShadowPassSequence.Content content = ShadowPassSequence.Content.of(this.model.properties());
+				this.shadowOps = new ShadowPassOps(shadowCamera, this.shadowTargets, built.shadowLayout(), this.delegate,
+					this.shadowDispatch);
+				this.shadowDriver = new ShadowFrameDriver(new ShadowFrame(this.shadowOps), content, ShadowLists::detach);
+				ShadowLists.attach(shadowCamera, content);
+				ShadowComposites.get().attach(enc -> {
+					EngineFrame active = this.frame;
+					Targets current = this.targets;
+					if (active != null && current != null) {
+						active.shadowComposite(enc, current, this.passBlocks);
+					}
+				});
+			}
 		}
 		long tSettings = System.nanoTime();
 		logDimensionLine(set);
@@ -2180,6 +2253,7 @@ public final class Engine {
 	private static Targets newTargets(DimensionSet set, PackModel model, int width, int height, long ctx,
 			CustomImages images, boolean distant) {
 		Targets targets = new Targets(set.dimension().union(), model.properties().bufferSizes(), set.usedTargets(),
+			set.imageTargets(),
 			// depthtex1 is the solid depth (after the solid hand, before the translucents): dh_water reads it as depthtex0 (the
 			// solid depth Iris gives it), so the copy exists whenever DH is served.
 			readsTexture(set.dimension(), "depthtex1") || distant, readsTexture(set.dimension(), "depthtex2"), width, height,
@@ -2513,9 +2587,16 @@ public final class Engine {
 		}
 		this.state = State.LOADING;
 		releaseGpu();
-		this.foregroundFolder = folderOf(programs);
+		String targetFolder = folderOf(programs);
+		this.foregroundFolder = targetFolder;
+		// Re-check readyByFolder after setting foregroundFolder in case a background compile finished right before the switch.
+		DimensionSet raced = take(targetFolder, true);
+		if (raced != null) {
+			install(raced, surface);
+			return;
+		}
 		// A folder already loading lands in the pending set of this same request (D1: a second load would be a duplicate).
-		if (!this.loading.containsKey(folderOf(programs))) {
+		if (!this.loading.containsKey(targetFolder)) {
 			submitSet(this.generation.get(), programs, surface, true);
 		}
 	}
@@ -2649,8 +2730,22 @@ public final class Engine {
 	 * while every hook is inert. Idempotent; the frame start calls it while the state is FAILED.
 	 */
 	void releaseAfterFailure() {
-		if (this.state == State.FAILED && (this.redirector != null || this.active != null)) {
-			releaseGpu();
+		if (this.state == State.FAILED) {
+			if (this.redirector != null || this.active != null || this.targets != null) {
+				releaseGpu();
+			}
+			Pending pending = this.pendingSet.getAndSet(null);
+			if (pending != null) {
+				this.releaser.accept(pending.set());
+			}
+			synchronized (this.readyByFolder) {
+				if (!this.readyByFolder.isEmpty()) {
+					for (Ready ready : this.readyByFolder.values()) {
+						this.releaser.accept(ready.set());
+					}
+					this.readyByFolder.clear();
+				}
+			}
 		}
 	}
 
@@ -2661,17 +2756,19 @@ public final class Engine {
 
 	/**
 	 * The device closes: everything GPU-held is released (plan.md E3's release rule). A running background build stops at
-	 * its next stop point (before its next translation or Metal call; its request is replaced by the turn-off), and this
-	 * waits for the loader to end its last task: no Metal call may outlive the device.
+	 * its next stop point (before its next translation or Metal call; its request is replaced by moving the generation
+	 * first), and this waits for the loader to finish before the final turn-off drain so no Metal call or compiled set
+	 * outlives the device.
 	 */
 	public void shutdown() {
-		turnOff();
+		beginRequest();
 		ExecutorService service = this.loader;
 		if (service != null) {
 			service.shutdown();
 			this.loader = null;
 			awaitLoader(service);
 		}
+		turnOff();
 	}
 
 	/** Waits, bounded, for the loader's last task. A build stops before its next Metal call, so the wait is short in practice. */

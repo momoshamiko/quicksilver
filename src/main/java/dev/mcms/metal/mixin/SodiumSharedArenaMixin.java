@@ -1,3 +1,4 @@
+// Quicksilver: original code, Apache-2.0.
 package dev.mcms.metal.mixin;
 
 import net.caffeinemc.mods.sodium.client.gpu.arena.SharedBufferArena;
@@ -16,7 +17,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  */
 @Mixin(SharedBufferArena.class)
 abstract class SodiumSharedArenaMixin {
-	@Inject(method = "deleteShared", at = @At("TAIL"))
+	@Inject(method = "deleteShared", at = @At("TAIL"), require = 0)
 	private void mcmsMetal$releaseDebugTexture(CallbackInfo ci) {
 		Minecraft.getInstance().getTextureManager().release(((SodiumBufferArenaAccessor) (Object) this).mcmsMetal$textureId());
 	}

@@ -3,7 +3,13 @@
  */
 package dev.mcms.metal;
 
+import java.io.IOException;
+import java.io.Reader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Locale;
+import java.util.Properties;
 import net.fabricmc.loader.api.FabricLoader;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -39,6 +45,56 @@ public final class MetalSupport {
 	/** Decided once, at the first call, which logs the reason; QuicksilverSettings makes that call at preLaunch. Null: Metal can run. */
 	public static @Nullable Blocker blocker() {
 		return Decided.BLOCKER;
+	}
+
+	/** Parses a {@code -Dmcms.metal} / {@code metal=} word: "off" or "false" disables Metal, everything else enables it. */
+	public static boolean parseMetalWord(@Nullable String value) {
+		if (value == null) return true;
+		String normalized = value.trim().toLowerCase(Locale.ROOT);
+		return !normalized.equals("false") && !normalized.equals("off");
+	}
+
+	/** Whether {@code -Dmcms.metal} allows Metal to run (true by default; false only for "false" or "off"). */
+	public static boolean metalEnabled() {
+		return parseMetalWord(System.getProperty("mcms.metal"));
+	}
+
+	/**
+	 * Whether Metal is enabled at mixin-preparation time, before {@link QuicksilverSettings#onPreLaunch()} has loaded
+	 * {@code quicksilver.properties} into system properties: a {@code -Dmcms.metal} launch flag wins; otherwise the
+	 * file's {@code metal=} entry decides (missing or unreadable defaults to true). Touches no Minecraft classes.
+	 */
+	public static boolean metalEnabledForMixins() {
+		String flag = System.getProperty("mcms.metal");
+		if (flag != null) {
+			return parseMetalWord(flag);
+		}
+		return readMetalFromConfig(FabricLoader.getInstance().getConfigDir().resolve("quicksilver.properties"));
+	}
+
+	/** Reads {@code metal=} from {@code quicksilver.properties}; returns false only for {@code false} (matching QuicksilverSettings). */
+	static boolean readMetalFromConfig(Path path) {
+		if (!Files.isRegularFile(path)) return true;
+		Properties stored = new Properties();
+		try (Reader in = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+			stored.load(in);
+		} catch (IOException | IllegalArgumentException e) {
+			return true;
+		}
+		String raw = stored.getProperty("metal");
+		return raw == null || !raw.trim().equalsIgnoreCase("false");
+	}
+
+	/** Plain-English reason Metal is unavailable on this machine/modpack, or null if supported. */
+	public static @Nullable String blockerMessage() {
+		Blocker b = blocker();
+		if (b == null) return null;
+		return switch (b) {
+			case NOT_MACOS -> "Quicksilver requires macOS on Apple Silicon";
+			case NOT_APPLE_SILICON -> "Quicksilver requires Apple Silicon (ARM64 Java)";
+			case MACOS_TOO_OLD -> "Quicksilver requires macOS 15 or newer";
+			case IRIS -> "Remove Iris to use Quicksilver's Metal renderer and shaders";
+		};
 	}
 
 	/** The decision itself, from the JVM's os.name, os.arch and os.version and whether Iris is loaded. */

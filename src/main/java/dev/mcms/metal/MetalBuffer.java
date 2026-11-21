@@ -15,21 +15,30 @@ import org.lwjgl.system.MemoryUtil;
  * offset and uploads never need a staging copy. Mapping is unsynchronized, exactly like the Vulkan backend.
  */
 class MetalBuffer extends BaseGpuBuffer {
+	/** Cap retained spare buffers per MetalBuffer so bursty renames cannot pin unbounded memory. */
+	private static final int MAX_SPARES = 4;
 	/** The memory, which rename() can swap. */
 	long handle, address;
 	/** Submit index of the last command that touched this buffer on the GPU; see MetalEncoder.idle. */
 	long lastUse = -1;
 	private final MetalEncoder encoder;
-	private boolean closed, mapped;
+	private boolean closed;
+	private int mapCount;
 	/** Memory rename() moved off and the GPU is done with, for the next rename. */
 	private final ArrayDeque<Long> spares = new ArrayDeque<>();
 
 	MetalBuffer(MetalEncoder encoder, long handle, @GpuBuffer.Usage int usage, long size) {
-		this(encoder, handle, usage, size, Native.bufferContents(handle));
+		this(encoder, handle, usage, size, checkHandle(handle, size));
+	}
+
+	private static long checkHandle(long handle, long size) {
+		if (handle == 0) throw new IllegalStateException("Couldn't allocate " + size + "-byte Metal buffer");
+		return Native.bufferContents(handle);
 	}
 
 	MetalBuffer(MetalEncoder encoder, long handle, @GpuBuffer.Usage int usage, long size, long address) {
 		super(usage, size);
+		if (handle == 0) throw new IllegalStateException("Couldn't allocate " + size + "-byte Metal buffer");
 		this.encoder = encoder;
 		this.handle = handle;
 		this.address = address;
@@ -61,14 +70,16 @@ class MetalBuffer extends BaseGpuBuffer {
 	 * a buffer someone mapped, whose view would keep pointing at the old memory.
 	 */
 	boolean rename() {
-		if (this.mapped) return false;
+		if (this.mapCount > 0) return false;
 		long old = this.handle;
 		Long spare = this.spares.poll();
-		this.handle = spare != null ? spare : Native.bufferNew(this.encoder.ctx, this.size());
-		this.address = Native.bufferContents(this.handle);
+		long next = spare != null ? spare : Native.bufferNew(this.encoder.ctx, this.size());
+		if (next == 0) return false;
+		this.handle = next;
+		this.address = Native.bufferContents(next);
 		this.lastUse = -1;
 		this.encoder.afterGpuFinishes(() -> {
-			if (this.closed) Native.release(old);
+			if (this.closed || this.spares.size() >= MAX_SPARES) Native.release(old);
 			else this.spares.add(old);
 		});
 		return true;
@@ -78,7 +89,9 @@ class MetalBuffer extends BaseGpuBuffer {
 	public GpuBufferSlice.MappedView map(long offset, long length, boolean read, boolean write) {
 		if (this.closed) throw new IllegalStateException("Buffer already closed");
 		if (offset < 0 || length < 0 || offset + length > this.size()) throw new IllegalArgumentException("Mapping out of range");
-		this.mapped = true;
-		return new GpuBufferSlice.MappedView(this.slice(offset, length), MemoryUtil.memByteBuffer(this.address + offset, Math.toIntExact(length)), () -> {});
+		int bytes = Math.toIntExact(length);
+		this.mapCount++;
+		return new GpuBufferSlice.MappedView(this.slice(offset, length), MemoryUtil.memByteBuffer(this.address + offset, bytes),
+			() -> this.mapCount = Math.max(0, this.mapCount - 1));
 	}
 }

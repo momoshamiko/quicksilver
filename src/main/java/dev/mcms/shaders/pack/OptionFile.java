@@ -57,7 +57,11 @@ public final class OptionFile {
 				// a file system without POSIX modes keeps its own default
 			}
 			Files.writeString(tmp, render(defaults, chosen, unknown), StandardCharsets.UTF_8);
-			Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+			try {
+				Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+			} catch (java.nio.file.AtomicMoveNotSupportedException fallback) {
+				Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
+			}
 		} catch (IOException | RuntimeException e) {
 			try {
 				Files.deleteIfExists(tmp);

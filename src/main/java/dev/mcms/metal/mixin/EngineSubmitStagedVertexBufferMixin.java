@@ -113,11 +113,11 @@ abstract class EngineSubmitStagedVertexBufferMixin {
 
 	@Inject(method = "endFrame", at = @At("RETURN"))
 	private void mcms$frameEnded(CallbackInfo ci) {
-		// Not gated on the engine: a buffer's ranges and records end with its frame, whichever state the engine is in
-		// (an off period must not leave them to resolve against the next set's upload bases).
+		// Not gated on the engine: this buffer's ranges end with its frame, whichever state the engine is in
+		// (an off period must not leave them to resolve against the next set's upload bases). Global EntityCapture
+		// state resets once per frame in EngineHandGameRendererMixin after RenderBuffers.endFrame().
 		if (mcms$ranges != null) {
 			mcms$ranges.reset();
 		}
-		EntityCapture.frameEnded();
 	}
 }
