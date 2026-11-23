@@ -38,12 +38,17 @@ public record TargetFormats(int format, int components, int bytes) {
 		return null;
 	}
 
-	/** Whether the format holds integers (the {@code I}/{@code UI} words and RGB10_A2UI): no blending, no conversion. */
-	public boolean integer() {
-		return switch (this.format) {
+	/** Whether a raw MTLPixelFormat holds integers (no blending in OpenGL 4.6 section 17.3.6 or Metal). */
+	public static boolean isInteger(int format) {
+		return switch (format) {
 			case 13, 14, 23, 24, 33, 34, 53, 54, 63, 64, 73, 74, 91, 103, 104, 113, 114, 123, 124 -> true;
 			default -> false;
 		};
+	}
+
+	/** Whether the format holds integers (the {@code I}/{@code UI} words and RGB10_A2UI): no blending, no conversion. */
+	public boolean integer() {
+		return isInteger(this.format);
 	}
 
 	/**

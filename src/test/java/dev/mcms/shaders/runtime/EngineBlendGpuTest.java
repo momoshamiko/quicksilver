@@ -162,6 +162,93 @@ class EngineBlendGpuTest {
 		assertTrue(blendOf(properties, "composite3", 0) == null);               // nothing configured: no blending
 	}
 
+	/**
+	 * OpenGL 4.6 section 17.3.6 ignores blending on integer color attachments, whereas Metal aborts pipeline validation
+	 * if blendingEnabled is set on an integer pixel format. Both DimensionSet and mc_pipeline_new must force blending off.
+	 */
+	@org.junit.jupiter.api.Test
+	void integerAttachmentIgnoresBlendingWithoutMetalValidationAbort() throws Exception {
+		Path dir = Files.createTempDirectory("qs-int-blend");
+		try {
+			Path shaders = dir.resolve("shaders");
+			Files.createDirectories(shaders);
+			Files.writeString(shaders.resolve("shaders.properties"), "blend.composite=ONE ONE ONE ONE\n");
+			String vsh = """
+				#version 430
+				void main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }
+				""";
+			Files.writeString(shaders.resolve("composite.vsh"), vsh);
+			Files.writeString(shaders.resolve("composite.fsh"), """
+				#version 430
+				/*
+				const int colortex1Format = RGBA32UI;
+				*/
+				/* RENDERTARGETS: 1 */
+				layout(location = 0) out uvec4 outData;
+				void main() { outData = uvec4(1u, 2u, 3u, 4u); }
+				""");
+			Files.writeString(shaders.resolve("final.vsh"), vsh);
+			Files.writeString(shaders.resolve("final.fsh"), """
+				#version 430
+				/* RENDERTARGETS: 0 */
+				layout(location = 0) out vec4 fragColor;
+				void main() { fragColor = vec4(1.0); }
+				""");
+			PackModel intModel;
+			try (PackSource pack = PackSource.open(dir)) {
+				intModel = PackModel.load(pack, StandardMacros.engine(), "en_us", new java.util.Properties());
+			}
+			dev.mcms.shaders.pack.DimensionPrograms dim = intModel.rootFolder();
+			try (HeadlessGpu gpu = new HeadlessGpu()) {
+				DimensionSet set = DimensionSet.load(gpu.context(), "int-blend", intModel, dim,
+					CustomUniforms.of(intModel), RGBA8, dim.union().colorFormats(), List.of(),
+					Engine.COPIES_NOT_COMPILED);
+				try {
+					assertEquals(2, set.passes().size(),
+						"composite writing RGBA32UI with blend directive must build cleanly: notes=" + set.notes());
+					assertEquals(0, set.absent(), "no pass should fail: " + set.notes());
+				} finally {
+					set.passes().forEach(p -> MetalBridge.release(p.pipeline()));
+					if (set.plans() != null) {
+						set.plans().close();
+					}
+				}
+				// Also exercise the native mc_pipeline_new guard directly with blending=1 on MTLPixelFormatRGBA32Uint (123).
+				var translated = dev.mcms.glsl.Translator.translate(new dev.mcms.glsl.msl.ProgramRequest(
+					"int_direct", dev.mcms.glsl.msl.ProgramRequest.Family.FULL_SCREEN,
+					List.of(
+						new dev.mcms.glsl.msl.ProgramRequest.StageSource(dev.mcms.glsl.sema.Stage.VERTEX,
+							"#version 430\nvoid main(){gl_Position=vec4(0.0,0.0,0.0,1.0);}\n",
+							List.of(new dev.mcms.glsl.sema.SourceLine("v", 1), new dev.mcms.glsl.sema.SourceLine("v", 2))),
+						new dev.mcms.glsl.msl.ProgramRequest.StageSource(dev.mcms.glsl.sema.Stage.FRAGMENT,
+							"#version 430\nlayout(location=0) out uvec4 o;\nvoid main(){o=uvec4(1u);}\n",
+							List.of(new dev.mcms.glsl.sema.SourceLine("f", 1), new dev.mcms.glsl.sema.SourceLine("f", 2),
+								new dev.mcms.glsl.sema.SourceLine("f", 3)))),
+					dev.mcms.glsl.msl.ProgramRequest.VertexLayout.fullScreenQuad(),
+					List.of(new dev.mcms.glsl.msl.ProgramRequest.ColorTarget(0, 1, 4)),
+					List.of(), List.of(), List.of(),
+					dev.mcms.glsl.msl.ProgramRequest.UniformSchema.none(), null, false));
+				assertTrue(translated.ok(), translated.diagnostics().toString());
+				ShaderNative.Compiled lib = ShaderNative.libraryNew(gpu.context(), translated.msl(),
+					ShaderNative.MSL_3_1, ShaderNative.MATH_PACKS, true);
+				assertTrue(lib.ok(), lib.error());
+				try {
+					int[] desc = {0, 0, 1, 123, 15, 1, 1, 1, 0, 1, 1, 0, 0, 3};
+					long pso = MetalBridge.pipelineNew(gpu.context(), lib.library(), translated.vertexEntry(),
+						lib.library(), translated.fragmentEntry(), desc);
+					assertTrue(pso != 0, "native mc_pipeline_new must guard integer format blending");
+					MetalBridge.release(pso);
+				} finally {
+					MetalBridge.release(lib.library());
+				}
+			}
+		} finally {
+			try (var walk = Files.walk(dir)) {
+				walk.sorted(java.util.Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+			}
+		}
+	}
+
 	private static ShaderProperties.BlendState blendOf(ShaderProperties properties, String program, int target) {
 		return DimensionSet.blendFor(properties.blends(), program, target);
 	}

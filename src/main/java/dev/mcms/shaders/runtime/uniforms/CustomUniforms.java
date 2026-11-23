@@ -58,9 +58,21 @@ public final class CustomUniforms {
 	public static CustomUniforms of(PackModel model) {
 		List<Entry> entries = new ArrayList<>();
 		List<Std140.Member> members = new ArrayList<>();
+		List<PackModel.CustomValue> values = model.customValues();
+		Map<String, Integer> lastUniform = new HashMap<>();
+		for (int i = 0; i < values.size(); i++) {
+			PackModel.CustomValue cv = values.get(i);
+			if (cv.error().isPresent() || cv.compiled().isEmpty() || cv.outputSlot().isEmpty()) {
+				continue;
+			}
+			if (!cv.variable()) {
+				lastUniform.put(cv.name(), i);
+			}
+		}
 		int scratch = 0;
 		boolean any = false;
-		for (PackModel.CustomValue cv : model.customValues()) {
+		for (int i = 0; i < values.size(); i++) {
+			PackModel.CustomValue cv = values.get(i);
 			if (cv.error().isPresent() || cv.compiled().isEmpty() || cv.outputSlot().isEmpty()) {
 				if (cv.error().isPresent()) {
 					// Logged once per load, as the frame block logs unknown uniforms once per program.
@@ -71,10 +83,11 @@ public final class CustomUniforms {
 			}
 			any = true;
 			CompiledExpr compiled = cv.compiled().get();
+			boolean writesBlock = !cv.variable() && Integer.valueOf(i).equals(lastUniform.get(cv.name()));
 			entries.add(new Entry(cv.name(), typeWord(cv.type().orElseThrow()), cv.type().orElseThrow(), compiled,
-				cv.outputSlot().getAsInt(), cv.variable()));
+				cv.outputSlot().getAsInt(), writesBlock));
 			scratch = Math.max(scratch, compiled.vectorScratch());
-			if (!cv.variable()) {
+			if (writesBlock) {
 				members.add(new Std140.Member(cv.name(), typeWord(cv.type().orElseThrow())));
 			}
 		}
@@ -143,7 +156,7 @@ public final class CustomUniforms {
 				default -> {
 				}
 			}
-			if (!e.variable()) {
+			if (e.writesBlock()) {
 				writeField(e);
 			}
 		}
@@ -195,8 +208,8 @@ public final class CustomUniforms {
 		};
 	}
 
-	/** One custom value: its name, GLSL type word, expression type, compiled expression, frame slot and kind. */
+	/** One custom value: its name, GLSL type word, expression type, compiled expression, frame slot and block write flag. */
 	private record Entry(String name, String type, ExprType exprType, CompiledExpr compiled, int slot,
-			boolean variable) {
+			boolean writesBlock) {
 	}
 }

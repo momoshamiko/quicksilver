@@ -77,7 +77,7 @@ final class MetalDevice implements GpuDeviceBackend {
 				? Math.max(0L, ARENA_RESERVE_PROP)
 				: (workingSet > 0 && workingSet < ARENA_RESERVE_MIN_WORKING_SET ? 0L : ARENA_RESERVE_DEFAULT);
 			this.info = new DeviceInfo(
-				MemoryUtil.memUTF8(name), "Apple", "Metal (Quicksilver 0.2.1, from mcopt 0.3.0-alpha.2)", true, "Metal", 1.0F,
+				MemoryUtil.memUTF8(name), "Apple", "Metal (Quicksilver 0.2.2, from mcopt 0.3.0-alpha.2)", true, "Metal", 1.0F,
 				new DeviceLimits(16, 256, 16384, Native.maxBufferLength(this.ctx), Integer.MAX_VALUE, 8, Integer.MAX_VALUE),
 				// Every multi-draw form is a native loop of Metal draws, so all of them are "supported".
 				new DeviceFeatures(true, true, true, true, true, true, true, true),

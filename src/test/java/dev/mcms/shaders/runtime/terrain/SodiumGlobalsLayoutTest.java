@@ -59,6 +59,22 @@ class SodiumGlobalsLayoutTest {
 	}
 
 	@Test
+	void release093DeclaresTheCameraOffsetAt144AndMatchesBeta5() throws Exception {
+		String jar = System.getProperty("mcms.test.sodium.093");
+		assumeTrue(jar != null, "the 0.9.3 jar path was not set");
+		SodiumGlobals globals = SodiumGlobals.parse(readGlobals(jar));
+		assertTrue(globals.problems().isEmpty(), () -> String.join("; ", globals.problems()));
+		assertEquals(144L, globals.cameraOffsetAt());
+		assertEquals(200, globals.size());
+		assertEquals(160L, globals.offsetOf("u_EnvironmentFog"));
+		assertEquals(168L, globals.offsetOf("u_RenderFog"));
+		assertEquals(176L, globals.offsetOf("u_TexelSize"));
+		assertEquals(184L, globals.offsetOf("u_TexCoordShrink"));
+		assertEquals(192L, globals.offsetOf("u_FadePeriodInv"));
+		assertEquals(196L, globals.offsetOf("u_UseRGSS"));
+	}
+
+	@Test
 	void aBlockThatLacksARequiredFieldReportsTheProblem() {
 		SodiumGlobals globals = SodiumGlobals.parse("""
 			layout(std140) uniform u_Globals {

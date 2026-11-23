@@ -8,6 +8,7 @@ import dev.mcms.glsl.ast.CallExpr;
 import dev.mcms.glsl.ast.Decl;
 import dev.mcms.glsl.ast.Declarator;
 import dev.mcms.glsl.ast.Expr;
+import dev.mcms.glsl.ast.FieldExpr;
 import dev.mcms.glsl.ast.FunctionDefinition;
 import dev.mcms.glsl.ast.FunctionPrototype;
 import dev.mcms.glsl.ast.GlslNode;
@@ -52,6 +53,7 @@ import dev.mcms.glsl.types.GlslType;
 import dev.mcms.glsl.types.ImageType;
 import dev.mcms.glsl.types.SamplerType;
 import dev.mcms.glsl.types.ScalarKind;
+import dev.mcms.glsl.types.ScalarType;
 import dev.mcms.glsl.types.VectorType;
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -253,8 +255,33 @@ final class StagePrinter {
 		String qs = "qs_" + name;
 		prelude.append(GlslNames.declare(type, qs)).append(";\n");
 		Semantic semantic = GlslNames.ATTRIBUTES.get(name);
+		if (semantic == Semantic.TANGENT && !fullScreen() && findAttribute(layout, Semantic.TANGENT) < 0) {
+			int normIdx = findAttribute(layout, Semantic.NORMAL);
+			if (normIdx >= 0) {
+				String normalExpr = castValue("qs_a" + normIdx, GlslNames.components(layout.get(normIdx).format()),
+					VectorType.VEC3);
+				setup.append("\t{\n");
+				setup.append("\t\tvec3 qs_tn = ").append(normalExpr).append(";\n");
+				setup.append("\t\tfloat qs_tn2 = dot(qs_tn, qs_tn);\n");
+				setup.append("\t\tvec3 qs_tu = qs_tn2 > 1e-6 ? (qs_tn * inversesqrt(qs_tn2)) : vec3(0.0, 1.0, 0.0);\n");
+				setup.append("\t\tvec3 qs_tt = abs(qs_tu.y) < 0.999 ? normalize(cross(vec3(0.0, 1.0, 0.0), qs_tu)) : vec3(1.0, 0.0, 0.0);\n");
+				setup.append("\t\t").append(qs).append(" = ").append(castValue("vec4(qs_tt, 1.0)", 4, type)).append(";\n");
+				setup.append("\t}\n");
+				return;
+			}
+		}
 		setup.append('\t').append(qs).append(" = ")
 			.append(semantic == null ? zeroText(type) : attributeValue(semantic, type, layout)).append(";\n");
+	}
+
+	private static int findAttribute(List<VertexAttribute> layout, Semantic semantic) {
+		int index = -1;
+		for (int i = 0; i < layout.size(); i++) {
+			if (layout.get(i).semantic() == semantic) {
+				index = i;
+			}
+		}
+		return index;
 	}
 
 	/** The value of an attribute in the pack's type: converted and padded as the MSL emitter does (w defaults to 1). */
@@ -282,6 +309,9 @@ final class StagePrinter {
 			}
 			if (type instanceof VectorType v && v.size() == 4 && semantic == Semantic.COLOR) {
 				return "vec4(1.0)";
+			}
+			if (semantic == Semantic.TANGENT) {
+				return castValue("vec4(1.0, 0.0, 0.0, 1.0)", 4, type);
 			}
 			return zeroText(type);
 		}
@@ -540,8 +570,23 @@ final class StagePrinter {
 		hasMain |= main;
 		FunctionPrototype proto = renamedParams(main ? new FunctionPrototype(p.pos(), p.returnType(), "qs_main",
 			p.namePos(), p.params()) : p);
-		BlockStmt block = (BlockStmt) Trees.transform(Trees.transform(f.body(), this::zeroLocal), this::rename);
+		BlockStmt block = (BlockStmt) Trees.transform(
+			Trees.transformTopDown(Trees.transform(f.body(), this::zeroLocal), this::lowerScalarSwizzle), this::rename);
 		body.append(GlslPrinter.print(new FunctionDefinition(f.pos(), proto, block))).append('\n');
+	}
+
+	/** Lowers driver-lenient scalar swizzles ({@code f.x}, {@code f.xxx}) into valid GLSL 4.50 expressions. */
+	private GlslNode lowerScalarSwizzle(GlslNode n) {
+		if (n instanceof FieldExpr f && sema.typeOf(f.base()) instanceof ScalarType s) {
+			Expr base = (Expr) lowerScalarSwizzle(f.base());
+			if (f.name().length() == 1) {
+				return base;
+			}
+			String vecType = VectorType.of(s.kind(), f.name().length()).toString();
+			return new CallExpr(f.pos(), new TypeCallee(f.pos(), new BuiltinTypeSpec(f.pos(), vecType), List.of()),
+				List.of(base));
+		}
+		return n;
 	}
 
 	/**
@@ -756,7 +801,8 @@ final class StagePrinter {
 			}
 		}
 		Type type = new Type(v.type().pos(), quals, v.type().spec(), sizedDims(v));
-		body.append(GlslPrinter.print((GlslNode) Trees.transform(new VarDecl(v.pos(), type, kept), this::rename)))
+		body.append(GlslPrinter.print((GlslNode) Trees.transform(
+				Trees.transformTopDown(new VarDecl(v.pos(), type, kept), this::lowerScalarSwizzle), this::rename)))
 			.append('\n');
 	}
 
@@ -861,11 +907,13 @@ final class StagePrinter {
 					errors.add(stageName() + ": nested initializer lists are not supported");
 					return zeroText(type);
 				}
-				items.add(GlslPrinter.print((GlslNode) Trees.transform(item, this::rename)));
+				items.add(GlslPrinter.print((GlslNode) Trees.transform(
+					Trees.transformTopDown(item, this::lowerScalarSwizzle), this::rename)));
 			}
 			return GlslNames.typeName(type) + "(" + String.join(", ", items) + ")";
 		}
-		return "(" + GlslPrinter.print((GlslNode) Trees.transform(init, this::rename)) + ")";
+		return "(" + GlslPrinter.print((GlslNode) Trees.transform(
+			Trees.transformTopDown(init, this::lowerScalarSwizzle), this::rename)) + ")";
 	}
 
 	private String zeroText(GlslType type) {

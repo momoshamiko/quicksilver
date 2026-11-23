@@ -208,6 +208,52 @@ class ShadowTargetsTest {
 	}
 
 	@Test
+	void stageLocalHardwareFilteringFalseAndPlainSamplerHelperKeepSampler2D() {
+		ShadowTargets t = targets(Map.of("shadowHardwareFiltering", flag(true)), Map.of(), false);
+		String stageOff = "const bool shadowHardwareFiltering = false;\nuniform sampler2D shadowtex0;\n";
+		assertEquals(stageOff, t.rewriteDeclarations(stageOff), "stage-local false must keep sampler2D");
+
+		String helperPass = """
+			uniform sampler2D shadowtex1;
+			float sampleDepth(sampler2D tex, ivec2 p) { return texelFetch(tex, p, 0).x; }
+			void main() { float d = sampleDepth(shadowtex1, ivec2(0)); }
+			""";
+		assertEquals(helperPass, t.rewriteDeclarations(helperPass), "passing to sampler2D helper must keep sampler2D");
+
+		String unrelatedHelper = """
+			uniform sampler2D shadowtex0;
+			float other(sampler2D shadowtex0, float depth);
+			float other(sampler2D tex, float depth) { return texture(tex, vec2(depth)).x; }
+			void main() { float a = other(colortex0, texture(shadowtex0, vec3(0.0)).x); }
+			""";
+		assertTrue(t.rewriteDeclarations(unrelatedHelper).contains("uniform sampler2DShadow shadowtex0;"),
+			"unrelated sampler2D helper call or nested shadowtex0 in non-sampler arg must still allow shadowtex0 rewrite");
+
+		String mixedHelper = """
+			uniform sampler2D shadowtex0;
+			uniform sampler2D shadowtex1;
+			float sampleBoth(sampler2D raw, sampler2DShadow cmp, vec3 uv) {
+				return texelFetch(raw, ivec2(uv.xy), 0).x + texture(cmp, uv);
+			}
+			void main() { float a = sampleBoth(shadowtex0, shadowtex1, vec3(0.0)); }
+			""";
+		String mixedOut = t.rewriteDeclarations(mixedHelper);
+		assertTrue(mixedOut.contains("uniform sampler2D shadowtex0;"),
+			"plain sampler2D slot of mixed helper must keep shadowtex0 as sampler2D");
+		assertTrue(mixedOut.contains("uniform sampler2DShadow shadowtex1;"),
+			"comparison sampler2DShadow slot of mixed helper must rewrite shadowtex1 to sampler2DShadow");
+
+		String overloadedHelper = """
+			uniform sampler2D shadowtex0;
+			float sampleOne(sampler2D raw, vec3 uv) { return texelFetch(raw, ivec2(uv.xy), 0).x; }
+			float sampleOne(sampler2DShadow cmp, vec3 uv) { return texture(cmp, uv); }
+			void main() { float a = sampleOne(shadowtex0, vec3(0.0)); }
+			""";
+		assertTrue(t.rewriteDeclarations(overloadedHelper).contains("uniform sampler2DShadow shadowtex0;"),
+			"overloaded helper with sampler2DShadow at same parameter index must allow shadowtex0 rewrite");
+	}
+
+	@Test
 	void shadowDeclarationsAndTheWaterAliasAreRecognisedInStageText() {
 		assertTrue(ShadowTargets.readsShadow("uniform sampler2D shadowtex1;"));
 		assertTrue(ShadowTargets.readsShadow("uniform sampler2DShadow shadowtex0HW;"));

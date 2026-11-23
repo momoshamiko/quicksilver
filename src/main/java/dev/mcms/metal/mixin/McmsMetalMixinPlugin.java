@@ -84,8 +84,8 @@ public final class McmsMetalMixinPlugin implements IMixinConfigPlugin {
 		if (simpleName.equals("SodiumBufferArenaAccessor")
 				|| simpleName.equals("SodiumSharedArenaMixin")
 				|| simpleName.equals("SodiumSingleOwnerArenaMixin")) {
-			// Internal BufferArena.textureId leak workaround: only apply on checked Sodium releases.
-			return sodiumLoaded && dev.mcms.shaders.runtime.terrain.SodiumAdapter.allowedRelease(sodiumRelease);
+			// Internal BufferArena.textureId leak workaround: only apply on beta.1/beta.5 (fixed upstream in Sodium 0.9.3).
+			return sodiumLoaded && dev.mcms.shaders.runtime.terrain.SodiumAdapter.needsArenaLeakWorkaround(sodiumRelease);
 		}
 		if (simpleName.startsWith("Sodium")) {
 			return sodiumLoaded;

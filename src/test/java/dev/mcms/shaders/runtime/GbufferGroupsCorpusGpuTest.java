@@ -57,6 +57,41 @@ class GbufferGroupsCorpusGpuTest {
 		assertPartitions(BLISS, null, false);
 	}
 
+	@Test
+	void nobleAndKappaBuildFullPipelinesWithoutMetalValidationAbortOrShadowMismatch() throws IOException {
+		String corpus = System.getProperty("mcms.test.corpus");
+		assumeTrue(corpus != null, "no corpus folder given");
+		Path noble = Path.of(corpus, "noble.zip");
+		Path kappa = Path.of(corpus, "kappa-shader.zip");
+		assumeTrue(Files.isRegularFile(noble) && Files.isRegularFile(kappa), "step3 packs not present in " + corpus);
+		List<RenderPipeline> pipelines = Engine.gamePipelines();
+		VertexLayoutRegistry.register(GbufferRoutingGpuTest.EXTENDED, TerrainLayout.layout(0), GbufferBuildSupport.TERRAIN_FACTS);
+		try (HeadlessGpu gpu = new HeadlessGpu()) {
+			for (Path pack : List.of(noble, kappa)) {
+				PackModel model;
+				try (PackSource source = PackSource.open(pack)) {
+					model = PackModel.load(source, StandardMacros.engine(), "en_us", new Properties());
+				}
+				DimensionPrograms overworld = GbufferBuildSupport.overworld(model);
+				CustomUniforms custom = CustomUniforms.of(model);
+				DimensionSet set = DimensionSet.load(gpu.context(), pack.getFileName().toString(), model, overworld,
+					custom, 70, overworld.union().colorFormats(), pipelines, Engine.COPIES_NOT_COMPILED);
+				try {
+					System.out.println("[step3-gpu] " + pack.getFileName() + " Overworld: passes=" + set.passes().size()
+						+ " absent=" + set.absent() + " notes=" + set.notes());
+					assertEquals(0, set.absent(), pack.getFileName() + " Overworld had absent passes: " + set.notes());
+				} finally {
+					set.passes().forEach(p -> dev.mcms.metal.MetalBridge.release(p.pipeline()));
+					if (set.plans() != null) {
+						set.plans().close();
+					}
+				}
+			}
+		} finally {
+			VertexLayoutRegistry.unregister(GbufferRoutingGpuTest.EXTENDED);
+		}
+	}
+
 	/**
 	 * Builds every dimension's plans of the pack and checks the translucent split of its Overworld: Complementary's
 	 * translucent phase in one group, or Bliss's water and hand_water together and apart from block and entities.

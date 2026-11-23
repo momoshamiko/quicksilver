@@ -1072,6 +1072,36 @@ final class StageEmitter {
 			}
 		}
 		if (index < 0) {
+			if (semantic == Semantic.TANGENT) {
+				String normalExpr = null;
+				if (clouds()) {
+					normalExpr = "qs_cnormal";
+				} else {
+					for (int i = 0; i < layout.size(); i++) {
+						if (layout.get(i).semantic() == Semantic.NORMAL) {
+							VertexAttribute na = layout.get(i);
+							int nComps = na.decode() != null ? naturalComponents(Semantic.NORMAL) : componentsOf(na.format());
+							String nRaw = na.decode() != null ? "(" + na.decode() + ")"
+								: "float" + (nComps == 1 ? "" : String.valueOf(nComps)) + "(qs_a" + i + ")";
+							normalExpr = castAttribute(nRaw, nComps, VectorType.VEC3);
+						}
+					}
+				}
+				if (normalExpr != null) {
+					// Non-terrain layouts (entities, block entities, hands, clouds) carry no at_tangent attribute; a zero
+					// default causes normalize(gl_NormalMatrix * at_tangent.xyz) and cross(at_tangent.xyz, gl_Normal) to produce
+					// NaN and black out normal-mapped entities. Derive a deterministic unit tangent orthogonal to the normal.
+					bind.append("\t\t{\n");
+					bind.append("\t\t\tfloat3 qs_tn = ").append(normalExpr).append(";\n");
+					bind.append("\t\t\tfloat qs_tn2 = dot(qs_tn, qs_tn);\n");
+					bind.append("\t\t\tfloat3 qs_tu = qs_tn2 > 1e-6f ? (qs_tn * rsqrt(qs_tn2)) : float3(0.0f, 1.0f, 0.0f);\n");
+					bind.append("\t\t\tfloat3 qs_tt = abs(qs_tu.y) < 0.999f ? normalize(cross(float3(0.0f, 1.0f, 0.0f), qs_tu)) : float3(1.0f, 0.0f, 0.0f);\n");
+					bind.append("\t\t\t").append(target).append(" = ").append(castAttribute("float4(qs_tt, 1.0f)", 4, type))
+						.append(";\n");
+					bind.append("\t\t}\n");
+					return;
+				}
+			}
 			bind.append("\t\t").append(target).append(" = ").append(modulated(defaultAttribute(semantic, type), modulator))
 				.append(";\n");
 			return;
@@ -1178,7 +1208,11 @@ final class StageEmitter {
 		if (!(type instanceof VectorType v)) {
 			return MslTypes.value(type) + "{}";
 		}
-		String value = s == Semantic.COLOR ? "float4(1.0f)" : "float4(0.0f, 0.0f, 0.0f, 1.0f)";
+		String value = switch (s) {
+			case COLOR -> "float4(1.0f)";
+			case TANGENT -> "float4(1.0f, 0.0f, 0.0f, 1.0f)";
+			default -> "float4(0.0f, 0.0f, 0.0f, 1.0f)";
+		};
 		return castAttribute(value, 4, v);
 	}
 

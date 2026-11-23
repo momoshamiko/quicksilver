@@ -18,14 +18,33 @@ import org.junit.jupiter.api.Test;
 class SodiumAdapterTest {
 
 	@Test
-	void theVersionGateStripsTheBuildPartAndAllowsTheTwoCheckedReleases() {
+	void theVersionGateStripsTheBuildPartAndAllowsTheCheckedReleases() {
 		assertTrue(SodiumAdapter.allowedRelease("0.9.3-beta.1+mc26.3"));
 		assertTrue(SodiumAdapter.allowedRelease("0.9.3-beta.5+mc26.3"));
 		assertTrue(SodiumAdapter.allowedRelease("0.9.3-beta.5"));
+		assertTrue(SodiumAdapter.allowedRelease("0.9.3+mc26.3"));
+		assertTrue(SodiumAdapter.allowedRelease("0.9.3"));
+		assertTrue(SodiumAdapter.usesCameraOffsetShape("0.9.3+mc26.3"));
+		assertTrue(SodiumAdapter.usesCameraOffsetShape("0.9.3-beta.5"));
+		assertFalse(SodiumAdapter.usesCameraOffsetShape("0.9.3-beta.1"));
+		assertTrue(SodiumAdapter.needsArenaLeakWorkaround("0.9.3-beta.1"));
+		assertTrue(SodiumAdapter.needsArenaLeakWorkaround("0.9.3-beta.5+mc26.3"));
+		assertFalse(SodiumAdapter.needsArenaLeakWorkaround("0.9.3+mc26.3"));
 		assertFalse(SodiumAdapter.allowedRelease("0.9.3-beta.2+mc26.3"));
 		assertFalse(SodiumAdapter.allowedRelease("0.9.3-beta.4"));
 		assertFalse(SodiumAdapter.allowedRelease("0.10.0"));
 		assertFalse(SodiumAdapter.allowedRelease(null));
+	}
+
+	@Test
+	void the093MembersResolveFromItsJar() throws Exception {
+		String jar = System.getProperty("mcms.test.sodium.093");
+		assumeTrue(jar != null, "the 0.9.3 jar path was not set");
+		try (ChildFirst loader = new ChildFirst("sodium-093", new URL[] { new java.io.File(jar).toURI().toURL() })) {
+			SodiumAdapter.Lookup rel = SodiumAdapter.members("0.9.3", loader);
+			assertTrue(rel.present(), () -> "lookup failed: " + rel.failure());
+			assertFalse(SodiumAdapter.members("0.9.3-beta.1", loader).present());
+		}
 	}
 
 	@Test

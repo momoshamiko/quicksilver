@@ -334,10 +334,13 @@ public record DimensionSet(DimensionPrograms dimension, List<CompiledProgram> pa
 			used.add(request.outputs().get(attachment));
 		}
 		List<Boolean> blendOn = new ArrayList<>();
-		for (ProgramRequest.ColorTarget output : used) {
+		for (int c = 0; c < used.size(); c++) {
+			ProgramRequest.ColorTarget output = used.get(c);
 			var state = phase == Phase.SHADOWCOMP ? blendForShadow(modelBlends, name, output.target())
 				: blendFor(modelBlends, name, output.target());
-			blendOn.add(state != null && !state.off());
+			int pixelFormat = c == 0 && phase == Phase.FINAL ? mainFormat
+				: TargetFormats.of(formats.get(output.target()), phase == Phase.SHADOWCOMP ? -1 : output.target()).format();
+			blendOn.add(!TargetFormats.isInteger(pixelFormat) && state != null && !state.off());
 		}
 		GbufferPlans.checkCancelled(cancelled);  // a stop before the program's Metal library
 		ShaderNative.Compiled lib = FORCE_STANDARD_ROAD ? null
@@ -471,11 +474,13 @@ public record DimensionSet(DimensionPrograms dimension, List<CompiledProgram> pa
 				next++;
 				int target = request.outputs().get(c).target();
 				// A shadowcomp write names a shadow buffer: its format is the shadow word, so the colour rule is off (-1).
-				descriptor[i++] = c == 0 && finalPass ? mainFormat
+				int pixelFormat = c == 0 && finalPass ? mainFormat
 					: TargetFormats.of(formats.get(target), shadow ? -1 : target).format();
+				descriptor[i++] = pixelFormat;
 				descriptor[i++] = 15;  // write all components
-				dev.mcms.shaders.pack.ShaderProperties.BlendState blend = shadow
-					? blendForShadow(modelBlends, name, target) : blendFor(modelBlends, name, target);
+				// OpenGL 4.6 section 17.3.6 ignores blending on integer attachments; Metal aborts pipeline validation if enabled.
+				dev.mcms.shaders.pack.ShaderProperties.BlendState blend = TargetFormats.isInteger(pixelFormat) ? null
+					: (shadow ? blendForShadow(modelBlends, name, target) : blendFor(modelBlends, name, target));
 				if (blend != null && !blend.off()) {
 					descriptor[i++] = 1;
 					descriptor[i++] = blendFactor(blend.src());

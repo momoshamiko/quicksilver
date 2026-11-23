@@ -165,6 +165,48 @@ class CustomUniformsTest {
 		assertNull(System.getProperty("mcms.shaders.holdClockRead"));
 	}
 
+	/** Duplicate uniform declarations keep one block member (last definition wins) while earlier expressions see earlier slots. */
+	@Test
+	void duplicateUniformDeclarationDeduplicatesBlockAndPreservesOrder() throws IOException {
+		Path packDir = dir.resolve("dup-pack");
+		Path shaders = packDir.resolve("shaders");
+		Files.createDirectories(shaders.resolve("world0"));
+		Files.writeString(shaders.resolve("shaders.properties"), String.join("\n",
+			"variable.float.scale=1.0",
+			"uniform.vec2.res=vec2(scale, 2.0)",
+			"uniform.float.before=res.x",
+			"variable.float.scale=4.0",
+			"uniform.vec2.res=vec2(scale, 8.0)",
+			"uniform.float.after=res.x",
+			"uniform.float.retyped=1.5",
+			"uniform.vec2.retyped=vec2(3.0, 5.0)",
+			""));
+		Files.writeString(shaders.resolve("world0/composite.fsh"), "/* DRAWBUFFERS:0 */\nvoid main() {}\n");
+		PackModel model;
+		try (PackSource pack = PackSource.open(packDir)) {
+			model = PackModel.load(pack, StandardMacros.engine(), "en_us", new Properties());
+		}
+		CustomUniforms c = CustomUniforms.of(model);
+		assertNotNull(c);
+		var fields = c.schema(0).fields();
+		assertEquals(4, fields.size(), "duplicate uniforms must not produce duplicate block members: " + fields);
+		assertEquals(1, fields.stream().filter(f -> f.name().equals("res")).count());
+		assertEquals(1, fields.stream().filter(f -> f.name().equals("retyped")).count());
+		FrameUniforms frame = new FrameUniforms();
+		frame.advance(INPUTS.build(), 0f, -1f);
+		c.update(frame);
+		ByteBuffer b = ByteBuffer.allocate(c.size()).order(ByteOrder.LITTLE_ENDIAN);
+		c.write(b);
+		b.flip();
+		Map<String, Integer> o = offsets(c);
+		assertEquals(1.0f, b.getFloat(o.get("before")), 1e-6);
+		assertEquals(4.0f, b.getFloat(o.get("after")), 1e-6);
+		assertEquals(4.0f, b.getFloat(o.get("res")), 1e-6);
+		assertEquals(8.0f, b.getFloat(o.get("res") + 4), 1e-6);
+		assertEquals(3.0f, b.getFloat(o.get("retyped")), 1e-6);
+		assertEquals(5.0f, b.getFloat(o.get("retyped") + 4), 1e-6);
+	}
+
 	private static float read(CustomUniforms c, String name) {
 		ByteBuffer b = ByteBuffer.allocate(c.size()).order(ByteOrder.LITTLE_ENDIAN);
 		c.write(b);

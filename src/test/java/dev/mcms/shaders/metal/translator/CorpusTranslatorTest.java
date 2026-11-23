@@ -38,6 +38,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -494,12 +495,17 @@ public final class CorpusTranslatorTest {
 	 */
 	static UniformSchema schemaFor(PackModel model, boolean distantHorizons) {
 		List<UniformBlock> blocks = new ArrayList<>(List.of(FRAME_BLOCK, DRAW_BLOCK));
-		List<String> custom = new ArrayList<>();
+		Map<String, String> customByName = new LinkedHashMap<>();
 		for (PackModel.CustomValue cv : model.customValues()) {
 			if (!cv.variable() && cv.type().isPresent()) {
-				custom.add(cv.name());
-				custom.add(cv.typeName());
+				customByName.remove(cv.name());
+				customByName.put(cv.name(), cv.typeName());
 			}
+		}
+		List<String> custom = new ArrayList<>(customByName.size() * 2);
+		for (Map.Entry<String, String> e : customByName.entrySet()) {
+			custom.add(e.getKey());
+			custom.add(e.getValue());
 		}
 		if (!custom.isEmpty()) {
 			blocks.add(new UniformBlock("QsCustom", CUSTOM_SLOT, std140(custom.toArray(String[]::new))));

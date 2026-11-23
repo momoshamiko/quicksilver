@@ -553,6 +553,24 @@ id<MTLComputePipelineState> mc_compute_pipeline_new(Ctx *ctx, const char *source
  *   [.] depthPixelFormat (0 = none)
  *   [.] topologyClass (MTLPrimitiveTopologyClass)
  */
+static bool mc_pixel_format_is_integer(MTLPixelFormat fmt) {
+	switch (fmt) {
+		case MTLPixelFormatR8Uint: case MTLPixelFormatR8Sint:
+		case MTLPixelFormatR16Uint: case MTLPixelFormatR16Sint:
+		case MTLPixelFormatRG8Uint: case MTLPixelFormatRG8Sint:
+		case MTLPixelFormatR32Uint: case MTLPixelFormatR32Sint:
+		case MTLPixelFormatRG16Uint: case MTLPixelFormatRG16Sint:
+		case MTLPixelFormatRGBA8Uint: case MTLPixelFormatRGBA8Sint:
+		case MTLPixelFormatRGB10A2Uint:
+		case MTLPixelFormatRG32Uint: case MTLPixelFormatRG32Sint:
+		case MTLPixelFormatRGBA16Uint: case MTLPixelFormatRGBA16Sint:
+		case MTLPixelFormatRGBA32Uint: case MTLPixelFormatRGBA32Sint:
+			return true;
+		default:
+			return false;
+	}
+}
+
 id<MTLRenderPipelineState> mc_pipeline_new(Ctx *ctx, id<MTLLibrary> vlib, const char *vname, id<MTLLibrary> flib, const char *fname,
 	const int *desc, char *err, int errCap) {
 	if (!ctx || !vlib || !vname || !flib || !fname || !desc) {
@@ -594,9 +612,10 @@ id<MTLRenderPipelineState> mc_pipeline_new(Ctx *ctx, id<MTLLibrary> vlib, const 
 			int colors = desc[i++];
 			for (int c = 0; c < colors; c++, i += 9) {
 				MTLRenderPipelineColorAttachmentDescriptor *cd = pd.colorAttachments[c];
-				cd.pixelFormat = (MTLPixelFormat) desc[i];
+				MTLPixelFormat fmt = (MTLPixelFormat) desc[i];
+				cd.pixelFormat = fmt;
 				cd.writeMask = (MTLColorWriteMask) desc[i + 1];
-				cd.blendingEnabled = desc[i + 2] != 0;
+				cd.blendingEnabled = desc[i + 2] != 0 && fmt != MTLPixelFormatInvalid && !mc_pixel_format_is_integer(fmt);
 				cd.sourceRGBBlendFactor = (MTLBlendFactor) desc[i + 3];
 				cd.destinationRGBBlendFactor = (MTLBlendFactor) desc[i + 4];
 				cd.rgbBlendOperation = (MTLBlendOperation) desc[i + 5];

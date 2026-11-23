@@ -680,6 +680,15 @@ final class BodyEmitter {
 		if (base instanceof StructType st) {
 			return (lv ? lvalue(f.base()) : expr(f.base())) + "." + StageEmitter.member(f.name());
 		}
+		if (base instanceof ScalarType s) {
+			if (f.name().length() == 1) {
+				if (lv || stage.isAtomicRef(f.base())) {
+					return lvalue(f.base());
+				}
+				return expr(f.base());
+			}
+			return MslTypes.vector(VectorType.of(s.kind(), f.name().length())) + "(" + expr(f.base()) + ")";
+		}
 		String swizzle = swizzle(f.name());
 		return (lv ? lvalue(f.base()) : expr(f.base())) + "." + swizzle;
 	}

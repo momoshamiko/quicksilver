@@ -267,4 +267,98 @@ final class GlslTranslatorStage2Test {
 		assertTrue(mat2Calls == 5, "expected exactly 5 nextMat2() calls, got " + mat2Calls + ":\n" + mainBody);
 		assertTrue(mat3Calls == 1, "expected exactly 1 nextMat3() call, got " + mat3Calls + ":\n" + mainBody);
 	}
+
+	@Test
+	void sizedArrayReturnScalarSwizzleAndAtomicInoutOverloadTranslateCleanly() {
+		String fs = """
+			#version 430
+			out vec4 fragColor;
+			float[3] weights(float x) {
+				return float[3](x, x * 2.0, x * 3.0);
+			}
+			void main() {
+				float w[3] = weights(0.25);
+				float s = w[1].x;
+				vec3 b = s.rrr;
+				s.s = 0.5;
+				fragColor = vec4(b, s);
+			}
+			""";
+		ProgramTranslation ft = translateFragment(fs, null);
+		assertTrue(ft.ok(), "array return + scalar swizzle failed: " + ft.diagnostics());
+		assertTrue(ft.msl().contains("array<float, 3> u_weights("), ft.msl());
+		assertTrue(ft.msl().contains("float3("), ft.msl());
+
+		String cs = """
+			#version 430
+			layout(local_size_x = 1) in;
+			layout(std430, binding = 0) buffer Buf { uint outVal; };
+			shared uint flag;
+			void main() {
+				atomicExchange(flag, 0);
+				flag.x = 7u;
+				uint v = flag.x;
+				uvec2 vv = flag.xx;
+				outVal = v + vv.y;
+			}
+			""";
+		ProgramTranslation ct = translateCompute(cs, List.of(new BufferBinding("Buf", 0, 0)), List.of());
+		assertTrue(ct.ok(), "atomicExchange + atomic scalar swizzle failed: " + ct.diagnostics());
+		assertFalse(ct.msl().contains("atomic_load_explicit(&(atomic_load_explicit("),
+			"atomic scalar swizzle must not double-load:\n" + ct.msl());
+	}
+
+	@Test
+	void missingAtTangentSynthesizesOrthogonalUnitTangentFromNormal() {
+		String vs = """
+			#version 120
+			attribute vec4 at_tangent;
+			varying vec4 vT;
+			void main() {
+				vec3 t = normalize(at_tangent.xyz);
+				vec3 b = normalize(cross(t, gl_Normal) * at_tangent.w);
+				vT = vec4(t + b, at_tangent.w);
+				gl_Position = gl_Vertex;
+			}
+			""";
+		String fs = """
+			#version 120
+			varying vec4 vT;
+			void main() {
+				gl_FragData[0] = vT;
+			}
+			""";
+		ProgramRequest.VertexLayout entityLayout = new ProgramRequest.VertexLayout(
+			List.of(
+				new ProgramRequest.VertexAttribute(ProgramRequest.Semantic.POSITION, "float3", 0, 0),
+				new ProgramRequest.VertexAttribute(ProgramRequest.Semantic.NORMAL, "char3Normalized", 0, 12)),
+			false);
+		ProgramTranslation entity = Translator.translate(new ProgramRequest("entity_tangent", ProgramRequest.Family.GBUFFERS,
+			List.of(new ProgramRequest.StageSource(Stage.VERTEX, vs, lines(vs)),
+				new ProgramRequest.StageSource(Stage.FRAGMENT, fs, lines(fs))),
+			entityLayout, List.of(new ColorTarget(0, 0, 4)), List.of(), List.of(), List.of(), UniformSchema.none(), null, false));
+		assertTrue(entity.ok(), "entity tangent synthesis failed: " + entity.diagnostics());
+		assertTrue(entity.msl().contains("cross(float3(0.0f, 1.0f, 0.0f), qs_tu)"),
+			"expected orthogonal tangent synthesis from normal:\n" + entity.msl());
+
+		dev.mcms.glsl.glsl450.Glsl450Program glsl450 = dev.mcms.glsl.glsl450.Glsl450Printer.print(
+			new ProgramRequest("entity_tangent_450", ProgramRequest.Family.GBUFFERS,
+				List.of(new ProgramRequest.StageSource(Stage.VERTEX, vs, lines(vs)),
+					new ProgramRequest.StageSource(Stage.FRAGMENT, fs, lines(fs))),
+				entityLayout, List.of(new ColorTarget(0, 0, 4)), List.of(), List.of(), List.of(), UniformSchema.none(), null, false));
+		assertTrue(glsl450.ok(), "GLSL 4.50 entity tangent synthesis failed: " + glsl450.errors());
+		assertTrue(glsl450.stage(Stage.VERTEX).source().contains("cross(vec3(0.0, 1.0, 0.0), qs_tu)"),
+			"expected orthogonal tangent synthesis in GLSL 4.50:\n" + glsl450.stage(Stage.VERTEX).source());
+
+		ProgramRequest.VertexLayout noNormalLayout = new ProgramRequest.VertexLayout(
+			List.of(new ProgramRequest.VertexAttribute(ProgramRequest.Semantic.POSITION, "float3", 0, 0)),
+			false);
+		ProgramTranslation noNormal = Translator.translate(new ProgramRequest("plain_tangent", ProgramRequest.Family.GBUFFERS,
+			List.of(new ProgramRequest.StageSource(Stage.VERTEX, vs, lines(vs)),
+				new ProgramRequest.StageSource(Stage.FRAGMENT, fs, lines(fs))),
+			noNormalLayout, List.of(new ColorTarget(0, 0, 4)), List.of(), List.of(), List.of(), UniformSchema.none(), null, false));
+		assertTrue(noNormal.ok(), "default tangent failed: " + noNormal.diagnostics());
+		assertTrue(noNormal.msl().contains("float4(1.0f, 0.0f, 0.0f, 1.0f)"),
+			"expected non-zero default tangent:\n" + noNormal.msl());
+	}
 }

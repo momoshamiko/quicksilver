@@ -2264,10 +2264,12 @@ public final class GbufferPlans implements AutoCloseable {
 		words[i++] = slots;
 		for (int attachment = 0; attachment < slots; attachment++) {
 			int target = targets[attachment];
-			words[i++] = formats[attachment];
+			int format = formats[attachment];
+			words[i++] = format;
 			boolean draws = written.contains(target);
 			words[i++] = draws ? 15 : 0;
-			ShaderProperties.BlendState blend = draws ? blendOf.apply(target) : null;
+			// OpenGL 4.6 section 17.3.6 ignores blending on integer attachments; Metal aborts pipeline validation if enabled.
+			ShaderProperties.BlendState blend = draws && !TargetFormats.isInteger(format) ? blendOf.apply(target) : null;
 			if (blend != null && !blend.off()) {
 				words[i++] = 1;
 				words[i++] = DimensionSet.blendFactor(blend.src());

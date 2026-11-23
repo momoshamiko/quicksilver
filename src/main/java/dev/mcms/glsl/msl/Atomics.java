@@ -35,10 +35,7 @@ final class Atomics {
 			if (node instanceof CallExpr c && !c.args().isEmpty()) {
 				CallResolution r = sema.callOf(c);
 				if (r != null && r.builtin() != null && isAtomicFunction(r.name())) {
-					Expr e = c.args().get(0);
-					while (e instanceof IndexExpr ix) {
-						e = ix.base();
-					}
+					Expr e = unwrapRef(c.args().get(0), sema);
 					if (e instanceof Ident id && sema.symbolOf(id) instanceof VariableSymbol v) {
 						variables.add(v);
 						// A member of an unnamed block is a global whose declaration is the block.
@@ -57,10 +54,7 @@ final class Atomics {
 
 	/** True when the expression is a variable or block member (or an element of one) that an atomic function uses. */
 	boolean isRef(Expr e, SemaResult sema) {
-		Expr root = e;
-		while (root instanceof IndexExpr ix) {
-			root = ix.base();
-		}
+		Expr root = unwrapRef(e, sema);
 		if (root instanceof Ident id && sema.symbolOf(id) instanceof VariableSymbol v) {
 			return variables.contains(v);
 		}
@@ -68,6 +62,20 @@ final class Atomics {
 			return fields.contains(MslTypes.structName(st) + "." + f.name());
 		}
 		return false;
+	}
+
+	private static Expr unwrapRef(Expr e, SemaResult sema) {
+		Expr root = e;
+		while (true) {
+			if (root instanceof IndexExpr ix) {
+				root = ix.base();
+			} else if (root instanceof FieldExpr f && sema.typeOf(f.base()) instanceof ScalarType
+					&& f.name().length() == 1) {
+				root = f.base();
+			} else {
+				return root;
+			}
+		}
 	}
 
 	boolean isVariable(VariableSymbol v) {

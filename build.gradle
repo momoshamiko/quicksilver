@@ -2,7 +2,7 @@ plugins {
 	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 }
 
-version = '0.2.1'
+version = '0.2.2'
 group = 'dev.mcms'
 
 // The public name (chosen 2026-10-16): the jar is quicksilver-<version>.jar. The Gradle project keeps the folder's name.
@@ -29,9 +29,14 @@ repositories {
 }
 
 configurations {
-	// The second Sodium pass of the mixin audit (MixinAuditTest, ADR 0007). Its jars reach the test only through the audit's own
-	// classloader, so no test classpath holds beta.5 and beta.1 together.
+	// Secondary Sodium passes of the mixin audit (MixinAuditTest, ADR 0007, ADR 0009). Each jar reaches the test only
+	// through its own classloader, so no test classpath holds two Sodium releases together.
 	mixinAuditSodiumBeta5 {
+		canBeResolved = true
+		canBeConsumed = false
+		transitive = false
+	}
+	mixinAuditSodiumBeta1 {
 		canBeResolved = true
 		canBeConsumed = false
 		transitive = false
@@ -42,15 +47,15 @@ dependencies {
 	minecraft "com.mojang:minecraft:${minecraft_version}"
 	implementation "net.fabricmc:fabric-loader:${loader_version}"
 	// The mixin targets. Minecraft 26.x is unobfuscated, so these jars compile as they are.
-	compileOnly 'maven.modrinth:sodium:g6ju16VJ'           // Sodium 0.9.3-beta.1+mc26.3 (pin since ADR 0003)
+	compileOnly 'maven.modrinth:sodium:tFcTKXDx'           // Sodium 0.9.3+mc26.3 (pin since ADR 0009)
 	// Not a project pin: the Distant Horizons release that DistantHorizonsRenderApiMixin targets.
 	compileOnly 'maven.modrinth:distanthorizons:TGgEbP9A'  // Distant Horizons 3.3.4 for 26.3
 	// The mixin audit (MixinAuditTest) reads the targets' bytecode from the test classpath; no test starts the game.
-	testImplementation 'maven.modrinth:sodium:g6ju16VJ'
+	testImplementation 'maven.modrinth:sodium:tFcTKXDx'
 	testImplementation 'maven.modrinth:distanthorizons:TGgEbP9A'
-	// ADR 0007: Sodium 0.9.3-beta.5 is the second allowed release. It never shares a test classpath with beta.1: the tests that
-	// need it load it from this configuration, through their own classloaders (the system property and the audit's second pass).
-	mixinAuditSodiumBeta5 'maven.modrinth:sodium:v7Lw0h1m'  // Sodium 0.9.3-beta.5+mc26.3 (bench/mods.lock.json)
+	// ADR 0007 / ADR 0009: beta.5 and beta.1 stay in ALLOWED_RELEASES and are verified in isolated classloaders.
+	mixinAuditSodiumBeta5 'maven.modrinth:sodium:v7Lw0h1m' // Sodium 0.9.3-beta.5+mc26.3 (bench/mods.lock.json)
+	mixinAuditSodiumBeta1 'maven.modrinth:sodium:g6ju16VJ' // Sodium 0.9.3-beta.1+mc26.3 (bench/mods.lock.json)
 	testImplementation platform('org.junit:junit-bom:6.1.3')
 	testImplementation 'org.junit.jupiter:junit-jupiter'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
@@ -96,14 +101,16 @@ test {
 		if (!project.hasProperty('gpuTests')) excludeTags 'gpu'
 	}
 	if (project.hasProperty('corpus')) systemProperty 'mcms.test.corpus', file(project.property('corpus')).absolutePath
-	// The two Sodium jars ADR 0007 allows, for the terrain tests (globals std140, the adapter lookups, the encoder
-	// differential): beta.1 from the compile classpath (the pin), beta.5 from mixinAuditSodiumBeta5 (never on the test classpath).
+	// All three Sodium jars ADR 0007 / ADR 0009 allow, for the terrain tests (globals std140, the adapter lookups, the
+	// encoder differential): 0.9.3 from the compile classpath (the pin), beta.5 and beta.1 from their audit configurations.
 	doFirst {
 		def sodiumJar = { config, id -> config.files.find { it.name.endsWith(".jar") && it.name.contains(id) } }
-		def beta1 = sodiumJar(configurations.compileClasspath, 'g6ju16VJ')
+		def rel093 = sodiumJar(configurations.compileClasspath, 'tFcTKXDx')
 		def beta5 = sodiumJar(configurations.mixinAuditSodiumBeta5, 'v7Lw0h1m')
-		if (beta1 != null) systemProperty 'mcms.test.sodium.beta1', beta1.absolutePath
+		def beta1 = sodiumJar(configurations.mixinAuditSodiumBeta1, 'g6ju16VJ')
+		if (rel093 != null) systemProperty 'mcms.test.sodium.093', rel093.absolutePath
 		if (beta5 != null) systemProperty 'mcms.test.sodium.beta5', beta5.absolutePath
+		if (beta1 != null) systemProperty 'mcms.test.sodium.beta1', beta1.absolutePath
 	}
 	// The E1 report (E1ReportTest) is written to this folder: -Pe1Report=<dir>. Without it, build/reports/e1.
 	if (project.hasProperty('e1Report')) systemProperty 'e1.report', file(project.property('e1Report')).absolutePath
@@ -111,15 +118,17 @@ test {
 	if (project.hasProperty('corpus') || project.hasProperty('gpuTests')) outputs.upToDateWhen { false }
 	jvmArgs '--enable-native-access=ALL-UNNAMED'
 	maxHeapSize = '2g'
-	// The audit's beta.5 pass gets its own classpath, from these paths only: the beta.5 jar, Minecraft and the mod's classes.
-	inputs.files project.configurations.mixinAuditSodiumBeta5
+	// Secondary Sodium audit passes get their own classpaths: the target jar, Minecraft and the mod's classes.
+	inputs.files project.configurations.mixinAuditSodiumBeta5, project.configurations.mixinAuditSodiumBeta1
 	doFirst { Test t ->
 		def minecraft = project.configurations.testRuntimeClasspath.files.findAll { it.name.startsWith('minecraft-merged-deobf') }
 		if (minecraft.isEmpty()) {
 			throw new GradleException('the Minecraft jar is not on the test classpath')
 		}
-		def paths = project.configurations.mixinAuditSodiumBeta5.files + minecraft + project.sourceSets.main.output.files
-		t.systemProperty 'mcms.audit.sodiumBeta5', paths.collect { it.absolutePath }.join(File.pathSeparator)
+		def pathsBeta5 = project.configurations.mixinAuditSodiumBeta5.files + minecraft + project.sourceSets.main.output.files
+		def pathsBeta1 = project.configurations.mixinAuditSodiumBeta1.files + minecraft + project.sourceSets.main.output.files
+		t.systemProperty 'mcms.audit.sodiumBeta5', pathsBeta5.collect { it.absolutePath }.join(File.pathSeparator)
+		t.systemProperty 'mcms.audit.sodiumBeta1', pathsBeta1.collect { it.absolutePath }.join(File.pathSeparator)
 	}
 	testLogging {
 		events 'failed', 'skipped'
@@ -181,21 +190,27 @@ tasks.register('checkSodiumReleases') {
 	inputs.files sources
 	outputs.upToDateWhen { false }
 	doLast {
-		def beta5 = configurations.mixinAuditSodiumBeta5.files.find { it.name.endsWith('.jar') && it.name.contains('v7Lw0h1m') }
-		if (beta5 == null) throw new GradleException('the beta.5 jar (v7Lw0h1m) is not in the mixinAuditSodiumBeta5 configuration')
-		def out = layout.buildDirectory.dir('checkSodiumReleases').get().asFile
-		if (out.exists()) out.deleteDir()
-		out.mkdirs()
+		def pinJar = configurations.compileClasspath.files.find { it.name.endsWith('.jar') && it.name.contains('tFcTKXDx') }
+		def baseCp = configurations.compileClasspath.files.findAll { it != pinJar }.collect { it.absolutePath }
 		def mainClasses = sourceSets.main.output.files.findAll { it.isDirectory() }.join(File.pathSeparator)
-		def pinJar = configurations.compileClasspath.files.find { it.name.endsWith('.jar') && it.name.contains('g6ju16VJ') }
-		def cp = [beta5.absolutePath, mainClasses] + configurations.compileClasspath.files.findAll { it != pinJar }.collect { it.absolutePath }
 		def javac = new File(org.gradle.internal.jvm.Jvm.current().getJavaHome(), 'bin/javac').absolutePath
-		def cmd = [javac, '--release', '25', '-nowarn', '-d', out.absolutePath, '-cp', cp.join(File.pathSeparator)]
-		sources.each { File f -> cmd.add(f.absolutePath) }
-		def result = new ProcessBuilder(cmd).redirectErrorStream(true).start()
-		def text = result.inputStream.text
-		if (result.waitFor() != 0) {
-			throw new GradleException("the Sodium-facing classes do not compile against beta.5 (ADR 0007):\n" + text)
+		[
+			['beta.5', configurations.mixinAuditSodiumBeta5, 'v7Lw0h1m'],
+			['beta.1', configurations.mixinAuditSodiumBeta1, 'g6ju16VJ'],
+		].each { label, cfg, id ->
+			def jar = cfg.files.find { it.name.endsWith('.jar') && it.name.contains(id) }
+			if (jar == null) throw new GradleException("the Sodium $label jar ($id) is not in ${cfg.name}")
+			def out = layout.buildDirectory.dir("checkSodiumReleases-$label").get().asFile
+			if (out.exists()) out.deleteDir()
+			out.mkdirs()
+			def cp = [jar.absolutePath, mainClasses] + baseCp
+			def cmd = [javac, '--release', '25', '-nowarn', '-d', out.absolutePath, '-cp', cp.join(File.pathSeparator)]
+			sources.each { File f -> cmd.add(f.absolutePath) }
+			def result = new ProcessBuilder(cmd).redirectErrorStream(true).start()
+			def text = result.inputStream.text
+			if (result.waitFor() != 0) {
+				throw new GradleException("the Sodium-facing classes do not compile against Sodium $label (ADR 0007 / ADR 0009):\n" + text)
+			}
 		}
 	}
 }

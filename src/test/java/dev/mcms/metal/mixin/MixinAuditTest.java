@@ -150,10 +150,19 @@ final class MixinAuditTest {
 
 	@Test
 	void theSodiumMixinsFollowTheRulesAgainstSodiumBeta5() throws IOException {
-		// The beta.5 pass has its own loader: the beta.5 jar, Minecraft and the mod's classes, and no beta.1 class.
-		String paths = System.getProperty("mcms.audit.sodiumBeta5");
+		auditSodiumPass("mcms.audit.sodiumBeta5", "beta.5");
+	}
+
+	@Test
+	void theSodiumMixinsFollowTheRulesAgainstSodiumBeta1() throws IOException {
+		auditSodiumPass("mcms.audit.sodiumBeta1", "beta.1");
+	}
+
+	private void auditSodiumPass(String prop, String label) throws IOException {
+		// Each secondary pass has its own loader: the target Sodium jar, Minecraft and the mod's classes.
+		String paths = System.getProperty(prop);
 		if (paths == null) {
-			throw new IllegalStateException("the beta.5 classpath comes from build.gradle: run the audit with Gradle");
+			throw new IllegalStateException("the " + label + " classpath comes from build.gradle: run the audit with Gradle");
 		}
 		try (URLClassLoader loader = new URLClassLoader(urls(paths), ClassLoader.getPlatformClassLoader())) {
 			Classes classes = new Classes(loader);

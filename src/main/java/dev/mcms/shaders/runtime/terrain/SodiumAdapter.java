@@ -21,8 +21,8 @@ import org.jspecify.annotations.Nullable;
  */
 public final class SodiumAdapter {
 
-	/** The releases the engine's Sodium members are checked against (ADR 0007; javap on every allowed jar). */
-	public static final java.util.List<String> ALLOWED_RELEASES = java.util.List.of("0.9.3-beta.1", "0.9.3-beta.5");
+	/** The releases the engine's Sodium members are checked against (ADR 0007, ADR 0009; javap on every allowed jar). */
+	public static final java.util.List<String> ALLOWED_RELEASES = java.util.List.of("0.9.3-beta.1", "0.9.3-beta.5", "0.9.3");
 
 	/** Public lookup: the members looked up are public, and a cross-loader lookup (the beta.1 jar test)
 	 * resolves their parameter types in the member's own loader, not ours. */
@@ -43,6 +43,27 @@ public final class SodiumAdapter {
 		return version != null && ALLOWED_RELEASES.contains(version.split("\\+", 2)[0]);
 	}
 
+	/** Whether this allowed Sodium release uses the beta.5+/0.9.3 signatures ({@code CameraTransform} and shadow flag). */
+	public static boolean usesCameraOffsetShape(@Nullable String version) {
+		if (version == null) {
+			return false;
+		}
+		String base = version.split("\\+", 2)[0];
+		return "0.9.3-beta.5".equals(base) || "0.9.3".equals(base);
+	}
+
+	/**
+	 * Whether this Sodium release needs Quicksilver's arena debug-texture leak mixins.
+	 * Sodium 0.9.3 fixed the leak upstream (lazy debug texture closed in {@code BufferArena.close}, ADR 0009).
+	 */
+	public static boolean needsArenaLeakWorkaround(@Nullable String version) {
+		if (version == null) {
+			return false;
+		}
+		String base = version.split("\\+", 2)[0];
+		return "0.9.3-beta.1".equals(base) || "0.9.3-beta.5".equals(base);
+	}
+
 	/**
 	 * Binds the adapter at engine start: looks {@code update} and {@code traverse} up on the live classes for the
 	 * installed release. Returns false when a member the release needs is missing, which fails the set's load.
@@ -53,14 +74,14 @@ public final class SodiumAdapter {
 			return false;
 		}
 		this.release = version;
-		boolean beta5 = "0.9.3-beta.5".equals(version);
+		boolean cameraOffsetShape = usesCameraOffsetShape(version);
 		try {
 			ClassLoader loader = SodiumAdapter.class.getClassLoader();
 			Class<?> manager = Class.forName("net.caffeinemc.mods.sodium.client.render.chunk.UniformBufferManager", false, loader);
 			Class<?> matrices = Class.forName("net.caffeinemc.mods.sodium.client.render.chunk.ChunkRenderMatrices", false, loader);
 			Class<?> fog = Class.forName("net.caffeinemc.mods.sodium.client.util.FogParameters", false, loader);
 			MethodType updateType = MethodType.methodType(void.class, matrices, fog);
-			if (beta5) {
+			if (cameraOffsetShape) {
 				Class<?> camera = Class.forName("net.caffeinemc.mods.sodium.client.render.viewport.CameraTransform", false, loader);
 				updateType = updateType.appendParameterTypes(camera);
 			}
@@ -69,7 +90,7 @@ public final class SodiumAdapter {
 			Class<?> visitor = Class.forName("net.caffeinemc.mods.sodium.client.render.chunk.lists.CoordinateSectionVisitor", false, loader);
 			Class<?> viewport = Class.forName("net.caffeinemc.mods.sodium.client.render.viewport.Viewport", false, loader);
 			MethodType traverseType = MethodType.methodType(void.class, visitor, viewport, float.class);
-			if (beta5) {
+			if (cameraOffsetShape) {
 				traverseType = traverseType.appendParameterTypes(boolean.class);
 			}
 			this.traverse = LOOKUP.findVirtual(forest, "traverse", traverseType);
@@ -87,8 +108,8 @@ public final class SodiumAdapter {
 	}
 
 	/**
-	 * Calls {@code UniformBufferManager.update} for the bound release. The camera transform is the beta.5 shape's third
-	 * argument and is ignored on beta.1; null is allowed when the caller has none.
+	 * Calls {@code UniformBufferManager.update} for the bound release. The camera transform is the beta.5+/0.9.3 shape's
+	 * third argument and is ignored on beta.1; null is allowed when the caller has none.
 	 */
 	public void updateGlobals(Object manager, Object matrices, Object fog, @Nullable Object cameraTransform) {
 		MethodHandle h = this.update;
@@ -96,7 +117,7 @@ public final class SodiumAdapter {
 			throw new IllegalStateException("the Sodium adapter is not bound");
 		}
 		try {
-			if (this.release.equals("0.9.3-beta.5")) {
+			if (usesCameraOffsetShape(this.release)) {
 				h.invoke(manager, matrices, fog, cameraTransform);
 			} else {
 				h.invoke(manager, matrices, fog);
@@ -108,7 +129,7 @@ public final class SodiumAdapter {
 
 	/**
 	 * Calls {@code RemovableMultiForest.traverse} for the bound release (the E5 shadow list). The boolean is the
-	 * beta.5 shape's last argument and is ignored on beta.1.
+	 * beta.5+/0.9.3 shape's last argument and is ignored on beta.1.
 	 */
 	public void traverseForest(Object forest, Object visitor, Object viewport, float distance, boolean flag) {
 		MethodHandle h = this.traverse;
@@ -116,7 +137,7 @@ public final class SodiumAdapter {
 			throw new IllegalStateException("the Sodium adapter is not bound");
 		}
 		try {
-			if (this.release.equals("0.9.3-beta.5")) {
+			if (usesCameraOffsetShape(this.release)) {
 				h.invoke(forest, visitor, viewport, distance, flag);
 			} else {
 				h.invoke(forest, visitor, viewport, distance);
@@ -137,13 +158,13 @@ public final class SodiumAdapter {
 
 	/** Looks the two members up for a given release word and loader shape (the release check, testable per jar). */
 	public static Lookup members(String version, ClassLoader loader) {
-		boolean beta5 = "0.9.3-beta.5".equals(version);
+		boolean cameraOffsetShape = usesCameraOffsetShape(version);
 		try {
 			Class<?> manager = Class.forName("net.caffeinemc.mods.sodium.client.render.chunk.UniformBufferManager", false, loader);
 			Class<?> matrices = Class.forName("net.caffeinemc.mods.sodium.client.render.chunk.ChunkRenderMatrices", false, loader);
 			Class<?> fog = Class.forName("net.caffeinemc.mods.sodium.client.util.FogParameters", false, loader);
 			MethodType updateType = MethodType.methodType(void.class, matrices, fog);
-			if (beta5) {
+			if (cameraOffsetShape) {
 				updateType = updateType.appendParameterTypes(
 					Class.forName("net.caffeinemc.mods.sodium.client.render.viewport.CameraTransform", false, loader));
 			}
@@ -152,7 +173,7 @@ public final class SodiumAdapter {
 			Class<?> visitor = Class.forName("net.caffeinemc.mods.sodium.client.render.chunk.lists.CoordinateSectionVisitor", false, loader);
 			Class<?> viewport = Class.forName("net.caffeinemc.mods.sodium.client.render.viewport.Viewport", false, loader);
 			MethodType traverseType = MethodType.methodType(void.class, visitor, viewport, float.class);
-			if (beta5) {
+			if (cameraOffsetShape) {
 				traverseType = traverseType.appendParameterTypes(boolean.class);
 			}
 			LOOKUP.findVirtual(forest, "traverse", traverseType);

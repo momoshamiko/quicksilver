@@ -243,7 +243,7 @@ final class ConstFold {
 	}
 
 	static ConstValue swizzle(ConstValue base, int[] components, GlslType result) {
-		ConstValue[] parts = base.parts();
+		ConstValue[] parts = base.isScalar() ? new ConstValue[] {base} : base.parts();
 		if (result instanceof ScalarType) {
 			return parts[components[0]];
 		}

@@ -40,6 +40,18 @@ class TerrainEncoderTest {
 	private static final float[][] SQUARE_UV = { { 0.1f, 0.9f }, { 0.9f, 0.9f }, { 0.9f, 0.1f }, { 0.1f, 0.1f } };
 
 	@Test
+	void theTwentyCompactBytesAreBitIdenticalToSodiumsEncoderOn093() throws Exception {
+		String jar = System.getProperty("mcms.test.sodium.093");
+		assumeTrue(jar != null, "the 0.9.3 jar path was not set");
+		for (float texelBias = 0; texelBias <= 1; texelBias += 0.25f) {
+			TerrainVertex[] quad = quad(POSITIONS, UVS, texelBias);
+			byte[] mine = write(new TerrainEncoder(), quad, 0x25, 42);
+			byte[] sodium = writeSodiumFromJar(jar, quad, 0x25, 42);
+			assertCompactBytesEqual(sodium, mine, "0.9.3, bias " + texelBias);
+		}
+	}
+
+	@Test
 	void theTwentyCompactBytesAreBitIdenticalToSodiumsEncoderOnBeta5() throws Exception {
 		String jar = System.getProperty("mcms.test.sodium.beta5");
 		assumeTrue(jar != null, "the beta.5 jar path was not set");

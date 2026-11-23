@@ -27,6 +27,7 @@ class EngineMixinGateTest {
 	void theSodiumHooksApplyOnlyOnTheAllowList() {
 		assertTrue(McmsMetalMixinPlugin.engineMixinApplies("SodiumEngineStartMixin", "0.9.3-beta.1"));
 		assertTrue(McmsMetalMixinPlugin.engineMixinApplies("SodiumEngineGlobalUniformsMixin", "0.9.3-beta.5"));
+		assertTrue(McmsMetalMixinPlugin.engineMixinApplies("SodiumEngineGlobalUniformsMixin", "0.9.3+mc26.3"));
 		assertTrue(McmsMetalMixinPlugin.engineMixinApplies("SodiumEngineStartMixin", "0.9.3-beta.1+mc26.3"),
 			"the build part after + does not decide");
 		assertFalse(McmsMetalMixinPlugin.engineMixinApplies("SodiumEngineStartMixin", "0.9.3-beta.2"),
@@ -65,8 +66,13 @@ class EngineMixinGateTest {
 	void optionalSodiumArenaLeakMixinsAreGatedToCheckedReleases() {
 		assertTrue(McmsMetalMixinPlugin.mixinApplies("SodiumSharedArenaMixin", "0.9.3-beta.1", null, true, false, true));
 		assertTrue(McmsMetalMixinPlugin.mixinApplies("SodiumSingleOwnerArenaMixin", "0.9.3-beta.5", null, true, false, true));
+		assertFalse(McmsMetalMixinPlugin.mixinApplies("SodiumSharedArenaMixin", "0.9.3+mc26.3", null, true, false, true),
+			"Sodium 0.9.3 fixed the BufferArena debug texture leak upstream (ADR 0009)");
+		assertFalse(McmsMetalMixinPlugin.mixinApplies("SodiumSingleOwnerArenaMixin", "0.9.3", null, true, false, true));
+		assertFalse(McmsMetalMixinPlugin.mixinApplies("SodiumBufferArenaAccessor", "0.9.3", null, true, false, true));
 		assertFalse(McmsMetalMixinPlugin.mixinApplies("SodiumSharedArenaMixin", "0.9.3-beta.2", null, true, false, true));
 		assertFalse(McmsMetalMixinPlugin.mixinApplies("SodiumBufferArenaAccessor", "0.9.4", null, true, false, true));
+		assertTrue(McmsMetalMixinPlugin.mixinApplies("SodiumDrawBackendMixin", "0.9.3", null, true, false, true));
 		assertTrue(McmsMetalMixinPlugin.mixinApplies("SodiumDrawBackendMixin", "0.9.4", null, true, false, true));
 	}
 }

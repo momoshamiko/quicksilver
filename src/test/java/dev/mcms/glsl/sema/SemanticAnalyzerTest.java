@@ -1175,4 +1175,81 @@ class SemanticAnalyzerTest {
 		assertEquals(Set.of("assigned", "compound", "pre", "post", "swizzled", "field", "element", "userOut", "builtinOut",
 			"uncalled", "color"), written);
 	}
+
+	@Test
+	void sizedArrayReturnIsAllowedAndUnsizedArrayReturnIsRejected() {
+		String okSrc = """
+			#version 430
+			float[3] makeFloats(float x) {
+				return float[3](x, x + 1.0, x + 2.0);
+			}
+			vec3[2] makeVecs(vec3 v) {
+				vec3 outArr[2] = vec3[2](v, v * 2.0);
+				return outArr;
+			}
+			out vec4 color;
+			void main() {
+				float a[3] = makeFloats(1.0);
+				vec3 b = makeVecs(vec3(a[1]))[1];
+				color = vec4(b, a[2]);
+			}
+			""";
+		SemaResult ok = strict(okSrc, Stage.FRAGMENT);
+		assertTrue(ok.ok(), ok.errors().toString());
+
+		String badUnsized = """
+			#version 430
+			float[] bad() { return float[1](0.0); }
+			void main() {}
+			""";
+		SemaResult bad = strict(badUnsized, Stage.FRAGMENT);
+		assertTrue(codes(bad).contains("array-return"), codes(bad).toString());
+	}
+
+	@Test
+	void scalarSwizzleIsLenientAndFoldsConstants() {
+		String src = """
+			#version 430
+			const float C = 2.5;
+			const float CX = C.x;
+			const vec3 CRRR = C.rrr;
+			out vec4 color;
+			void main() {
+				float d = 1.0;
+				d.s = 3.0;
+				vec2 e = d.xx;
+				color = vec4(e + CRRR.xy, CX, 1.0);
+			}
+			""";
+		SemaResult r = lenient(src, Stage.FRAGMENT);
+		assertTrue(r.ok(), r.errors().toString());
+		assertTrue(warningCodes(r).contains("scalar-swizzle"), warningCodes(r).toString());
+
+		SemaResult badComp = lenient("#version 430\nvoid main() { float f = 1.0; float g = f.y; }\n", Stage.FRAGMENT);
+		assertTrue(codes(badComp).contains("swizzle-range"), codes(badComp).toString());
+
+		SemaResult badName = lenient("#version 430\nvoid main() { float f = 1.0; float g = f.foo; }\n", Stage.FRAGMENT);
+		assertTrue(codes(badName).contains("operand-type"), codes(badName).toString());
+
+		SemaResult badLhs = lenient("#version 430\nvoid main() { float f = 1.0; f.xx = vec2(1.0); }\n", Stage.FRAGMENT);
+		assertFalse(badLhs.ok());
+	}
+
+	@Test
+	void inoutParameterRequiresExactMatchForOverloadResolution() {
+		String cs = """
+			#version 430
+			layout(local_size_x = 1) in;
+			shared uint flag;
+			void pick(inout int a, int b) { a = b; }
+			void pick(inout uint a, uint b) { a = b; }
+			void main() {
+				uint prev = atomicExchange(flag, 0);
+				uint u = prev;
+				pick(u, 1);
+			}
+			""";
+		SemaResult r = strict(cs, Stage.COMPUTE);
+		assertTrue(r.ok(), r.errors().toString());
+	}
 }

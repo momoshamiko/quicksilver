@@ -564,11 +564,15 @@ public final class SemanticAnalyzer {
 		return (int) v.integerValue();
 	}
 
+	private static boolean hasUnsizedArray(GlslType t) {
+		return t instanceof ArrayType a && (a.size() == null || hasUnsizedArray(a.element()));
+	}
+
 	private void declareFunction(FunctionPrototype proto, BlockStmt body) {
 		GlslType ret = dims(baseType(proto.returnType().spec(), proto.pos(), true), proto.returnType().dims(),
 				List.of());
-		if (ret instanceof ArrayType) {
-			error(proto.pos(), "array-return", "functions cannot return arrays");
+		if (hasUnsizedArray(ret)) {
+			error(proto.pos(), "array-return", "functions cannot return unsized arrays");
 		}
 		if (ret.containsOpaque()) {
 			error(proto.pos(), "opaque-return", "functions cannot return opaque types");
@@ -1448,10 +1452,34 @@ public final class SemanticAnalyzer {
 			return info(f, result, base.lvalue(), base.value() == null ? null
 					: ConstFold.swizzle(base.value(), components, result));
 		}
+		if (t instanceof ScalarType s && isSwizzleSet(f.name())) {
+			int[] components = swizzle(f, 1);
+			if (components == null) {
+				return ExprInfo.ERROR;
+			}
+			leniency(f.namePos(), "scalar-swizzle", "scalar swizzle '." + f.name()
+					+ "' is not standard GLSL; drivers accept it");
+			GlslType result = components.length == 1 ? s : VectorType.of(s.kind(), components.length);
+			boolean lv = components.length == 1 && base.lvalue();
+			return info(f, result, lv, base.value() == null ? null
+					: ConstFold.swizzle(base.value(), components, result));
+		}
 		return typeFail(f.pos(), "cannot select '" + f.name() + "' on " + t);
 	}
 
 	private static final String[] SWIZZLE_SETS = {"xyzw", "rgba", "stpq"};
+
+	private static boolean isSwizzleSet(String name) {
+		if (name.isEmpty()) {
+			return false;
+		}
+		for (String candidate : SWIZZLE_SETS) {
+			if (name.chars().allMatch(c -> candidate.indexOf(c) >= 0)) {
+				return true;
+			}
+		}
+		return false;
+	}
 
 	/** Component indices of a swizzle, or null after a diagnostic. */
 	private int[] swizzle(FieldExpr f, int size) {
@@ -1840,9 +1868,13 @@ public final class SemanticAnalyzer {
 			if (sameOrArray(want, got)) {
 				continue;
 			}
-			boolean ok = p.writes()
-					? Conversions.convertsIn(want, got, conversionVersion)
-					: Conversions.convertsIn(got, want, conversionVersion);
+			// GLSL 4.60 section 6.1.1: in converts arg -> param, out converts param -> arg, inout requires both.
+			boolean ok = switch (p.direction()) {
+				case OUT -> Conversions.convertsIn(want, got, conversionVersion);
+				case INOUT -> Conversions.convertsIn(got, want, conversionVersion)
+						&& Conversions.convertsIn(want, got, conversionVersion);
+				default -> Conversions.convertsIn(got, want, conversionVersion);
+			};
 			if (!ok) {
 				return false;
 			}

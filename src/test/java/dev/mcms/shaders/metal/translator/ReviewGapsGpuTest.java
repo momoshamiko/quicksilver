@@ -280,4 +280,129 @@ final class ReviewGapsGpuTest {
 		assertEquals(bits(99.0f), r[12]);
 		assertEquals(bits(4.0f), r[13]);
 	}
+
+	@Test
+	void functionReturningSizedArrayExecutesOnGpu() {
+		int[] r = kernel(OUT + """
+
+			float[4] makeWeights(float base) {
+				return float[4](base, base + 1.0, base + 2.0, base + 3.0);
+			}
+			vec3[2] makePairs(vec3 v) {
+				vec3 arr[2] = vec3[2](v, v * 2.0);
+				return arr;
+			}""", """
+			float w[4] = makeWeights(10.0);
+			float direct = makeWeights(20.0)[2];
+			vec3 p = makePairs(vec3(1.0, 2.0, 3.0))[1];
+			ob.o[0] = floatBitsToUint(w[0]);
+			ob.o[1] = floatBitsToUint(w[3]);
+			ob.o[2] = floatBitsToUint(direct);
+			ob.o[3] = floatBitsToUint(p.x);
+			ob.o[4] = floatBitsToUint(p.y);
+			ob.o[5] = floatBitsToUint(p.z);
+			""");
+		assertEquals(bits(10.0f), r[0]);
+		assertEquals(bits(13.0f), r[1]);
+		assertEquals(bits(22.0f), r[2]);
+		assertEquals(bits(2.0f), r[3]);
+		assertEquals(bits(4.0f), r[4]);
+		assertEquals(bits(6.0f), r[5]);
+	}
+
+	@Test
+	void scalarSwizzleAndAtomicInoutOverloadExecuteOnGpu() {
+		int[] r = kernel(OUT + """
+
+			shared uint flag;
+			uint calls = 0u;
+			const float K = 3.5;
+			float nextVal() {
+				calls++;
+				return float(calls) * 5.0;
+			}""", """
+			float a = nextVal().x;
+			vec3 b = nextVal().rrr;
+			float c = 1.0;
+			c.s = 7.5;
+			vec2 ck = K.xx;
+			flag = 9u;
+			uint prev = atomicExchange(flag, 0);
+			flag.x = 4u;
+			uint readBack = flag.x;
+			uvec2 dup = flag.xx;
+			ob.o[0] = calls;
+			ob.o[1] = floatBitsToUint(a);
+			ob.o[2] = floatBitsToUint(b.x);
+			ob.o[3] = floatBitsToUint(b.z);
+			ob.o[4] = floatBitsToUint(c);
+			ob.o[5] = floatBitsToUint(ck.y);
+			ob.o[6] = prev;
+			ob.o[7] = readBack;
+			ob.o[8] = dup.y;
+			""");
+		assertEquals(2, r[0], "scalar swizzle broadcast must evaluate its argument once");
+		assertEquals(bits(5.0f), r[1]);
+		assertEquals(bits(10.0f), r[2]);
+		assertEquals(bits(10.0f), r[3]);
+		assertEquals(bits(7.5f), r[4]);
+		assertEquals(bits(3.5f), r[5]);
+		assertEquals(9, r[6]);
+		assertEquals(4, r[7]);
+		assertEquals(4, r[8]);
+	}
+
+	@Test
+	void synthesizedAtTangentCompilesAndRendersFiniteOnGpu() {
+		String vs = """
+			#version 120
+			attribute vec4 at_tangent;
+			varying vec4 vT;
+			void main() {
+				vec3 t = normalize(at_tangent.xyz);
+				vec3 b = normalize(cross(t, gl_Normal.xyz + vec3(0.0, 1.0, 0.0)) * at_tangent.w);
+				vT = vec4(t, length(b));
+				gl_Position = ftransform();
+			}
+			""";
+		String fs = """
+			#version 120
+			varying vec4 vT;
+			void main() {
+				gl_FragData[0] = vT;
+			}
+			""";
+		ProgramTranslation full = fullscreen(vs, fs, 4);
+		ByteBuffer bb = ByteBuffer.wrap(render(full, HeadlessGpu.RGBA32_FLOAT)).order(ByteOrder.LITTLE_ENDIAN);
+		assertEquals(1.0f, bb.getFloat(0), 1e-5f, full.msl());
+		assertEquals(0.0f, bb.getFloat(4), 1e-5f, full.msl());
+		assertEquals(0.0f, bb.getFloat(8), 1e-5f, full.msl());
+		assertEquals(1.0f, bb.getFloat(12), 1e-5f, full.msl());
+
+		String entityVs = """
+			#version 120
+			attribute vec4 at_tangent;
+			varying vec4 vT;
+			void main() {
+				vec3 t = normalize(at_tangent.xyz);
+				vec3 b = normalize(cross(t, gl_Normal.xyz) * at_tangent.w);
+				vT = vec4(t, length(b));
+				gl_Position = gl_Vertex;
+			}
+			""";
+		ProgramRequest.VertexLayout entityLayout = new ProgramRequest.VertexLayout(
+			List.of(
+				new ProgramRequest.VertexAttribute(ProgramRequest.Semantic.POSITION, "float3", 0, 0),
+				new ProgramRequest.VertexAttribute(ProgramRequest.Semantic.NORMAL, "char3Normalized", 0, 12)),
+			false);
+		ProgramTranslation entity = TranslateSupport.translateOk(new ProgramRequest("entity-tangent-gpu",
+			ProgramRequest.Family.GBUFFERS,
+			List.of(TranslateSupport.stage(Stage.VERTEX, entityVs), TranslateSupport.stage(Stage.FRAGMENT, fs)),
+			entityLayout, List.of(new ColorTarget(0, 0, 4)), List.of(), List.of(), List.of(),
+			ProgramRequest.UniformSchema.none(), null, false));
+		try (HeadlessGpu gpu = new HeadlessGpu()) {
+			HeadlessGpu.CompileResult compiled = gpu.compile(entity.msl());
+			assertEquals(true, compiled.ok(), "entity tangent MSL failed Metal compile: " + compiled.diagnostics() + "\n" + entity.msl());
+		}
+	}
 }

@@ -106,6 +106,17 @@ public final class ShadowTargets {
 	private static final String VALUE_CALLS = "texture2D|texture2DLod|texture2DGrad|texture2DProj|textureLod|textureGather"
 		+ "|textureOffset|textureProj|textureLodOffset|texelFetch";
 
+	/** Stage-local {@code const bool shadowHardwareFiltering[01] = true|false;}. */
+	private static final Pattern STAGE_HARDWARE_FILTER = Pattern.compile(
+		"\\bconst\\s+bool\\s+(shadowHardwareFiltering([01])?)\\s*=\\s*(true|false)\\s*;");
+
+	/** A user function declaration/definition whose parameter list may contain sampler parameters. */
+	private static final Pattern SAMPLER_FUNCTION = Pattern.compile(
+		"\\b([A-Za-z_]\\w*)\\s*\\(([^;{}()]*)\\)\\s*(?:\\{|;)");
+
+	private static final Pattern PLAIN_SAMPLER_2D = Pattern.compile("\\bsampler2D\\b");
+	private static final Pattern SHADOW_SAMPLER_2D = Pattern.compile("\\bsampler2DShadow\\b");
+
 	private static final AtomicBoolean DEPTH_MIP_WARNED = new AtomicBoolean();
 	private static final AtomicBoolean MIP_WARNED = new AtomicBoolean();
 
@@ -341,12 +352,129 @@ public final class ShadowTargets {
 
 	/**
 	 * Whether a stage reads the named sampler's value through a call that needs a plain {@code sampler2D} ({@code texture2D}
-	 * and its kin, or {@code texture} with a two-component coordinate). A comparison sampler cannot serve those calls.
+	 * and its kin, {@code texture} with a two-component coordinate, or a user helper function declared with a plain
+	 * {@code sampler2D} parameter). A comparison sampler cannot serve those calls.
 	 */
 	static boolean readsValue(String stageText, String name) {
+		return readsValueClean(COMMENT.matcher(stageText).replaceAll(" "), name);
+	}
+
+	private static boolean readsValueClean(String clean, String name) {
 		String n = Pattern.quote(name);
-		return Pattern.compile("\\b(?:" + VALUE_CALLS + ")\\s*\\(\\s*" + n + "\\s*,").matcher(stageText).find()
-			|| Pattern.compile("\\btexture\\s*\\(\\s*" + n + "\\s*,\\s*+(?!vec3)").matcher(stageText).find();
+		if (Pattern.compile("\\b(?:" + VALUE_CALLS + ")\\s*\\(\\s*" + n + "\\s*,").matcher(clean).find()
+				|| Pattern.compile("\\btexture\\s*\\(\\s*" + n + "\\s*,\\s*+(?!vec3)").matcher(clean).find()) {
+			return true;
+		}
+		// User helper functions with a plain sampler2D parameter at index p (and no same-name overload accepting
+		// sampler2DShadow at index p). Track per parameter index so helpers taking both sampler2D and sampler2DShadow
+		// still protect their plain sampler2D slots.
+		java.util.Map<String, java.util.BitSet> plainFns = new java.util.HashMap<>();
+		java.util.Map<String, java.util.BitSet> shadowParams = new java.util.HashMap<>();
+		Matcher fm = SAMPLER_FUNCTION.matcher(clean);
+		while (fm.find()) {
+			String fn = fm.group(1);
+			String params = fm.group(2);
+			if (!PLAIN_SAMPLER_2D.matcher(params).find() && !SHADOW_SAMPLER_2D.matcher(params).find()) {
+				continue;
+			}
+			String[] parts = params.split(",");
+			for (int pIdx = 0; pIdx < parts.length; pIdx++) {
+				if (SHADOW_SAMPLER_2D.matcher(parts[pIdx]).find()) {
+					shadowParams.computeIfAbsent(fn, k -> new java.util.BitSet()).set(pIdx);
+				} else if (PLAIN_SAMPLER_2D.matcher(parts[pIdx]).find()) {
+					plainFns.computeIfAbsent(fn, k -> new java.util.BitSet()).set(pIdx);
+				}
+			}
+		}
+		for (var shadowEntry : shadowParams.entrySet()) {
+			java.util.BitSet plain = plainFns.get(shadowEntry.getKey());
+			if (plain != null) {
+				plain.andNot(shadowEntry.getValue());
+			}
+		}
+		for (var entry : plainFns.entrySet()) {
+			if (!entry.getValue().isEmpty() && passesSamplerArg(clean, entry.getKey(), entry.getValue(), name)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * True when {@code clean} calls {@code fn(...)} with {@code samplerName} passed directly as one of the parameter
+	 * positions in {@code samplerParamIndices}. Checking exact top-level argument slots ignores prototypes and avoids
+	 * matching {@code samplerName} when it only appears nested inside another argument (e.g. {@code helper(colortex0, texture(shadowtex0, ...))}).
+	 */
+	private static boolean passesSamplerArg(String clean, String fn, java.util.BitSet samplerParamIndices,
+			String samplerName) {
+		Matcher m = Pattern.compile("\\b" + Pattern.quote(fn) + "\\s*\\(").matcher(clean);
+		int len = clean.length();
+		while (m.find()) {
+			int start = m.end();
+			int depth = 1;
+			int i = start;
+			while (i < len && depth > 0) {
+				char ch = clean.charAt(i++);
+				if (ch == '(') {
+					depth++;
+				} else if (ch == ')') {
+					depth--;
+				}
+			}
+			if (depth != 0) {
+				continue;
+			}
+			int after = i;
+			while (after < len && Character.isWhitespace(clean.charAt(after))) {
+				after++;
+			}
+			// Skip function definitions (`fn(...) {`).
+			if (after < len && clean.charAt(after) == '{') {
+				continue;
+			}
+			int argIndex = 0;
+			int argStart = start;
+			int nested = 0;
+			int end = i - 1;
+			for (int pos = start; pos <= end; pos++) {
+				char ch = pos < end ? clean.charAt(pos) : ',';
+				if (ch == '(' || ch == '[' || ch == '{') {
+					nested++;
+				} else if (ch == ')' || ch == ']' || ch == '}') {
+					nested--;
+				} else if (ch == ',' && nested == 0) {
+					if (samplerParamIndices.get(argIndex)
+							&& clean.substring(argStart, pos).trim().equals(samplerName)) {
+						return true;
+					}
+					argIndex++;
+					argStart = pos + 1;
+				}
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Stage-local override of {@code shadowHardwareFiltering[depth]}, or null when the stage declares neither the
+	 * map-specific constant nor the generic one.
+	 */
+	private static @Nullable Boolean stageHardwareOverride(String cleanStageText, int depth) {
+		Boolean specific = null;
+		Boolean generic = null;
+		Matcher m = STAGE_HARDWARE_FILTER.matcher(cleanStageText);
+		while (m.find()) {
+			boolean value = "true".equals(m.group(3));
+			String idx = m.group(2);
+			if (idx != null) {
+				if (Integer.parseInt(idx) == depth) {
+					specific = value;
+				}
+			} else {
+				generic = value;
+			}
+		}
+		return specific != null ? specific : generic;
 	}
 
 	/** Whether a set's programs read or name a shadow map (the layout's own rule; see {@link #of}). */
@@ -436,12 +564,15 @@ public final class ShadowTargets {
 	 * written. Line breaks are kept.
 	 */
 	public String rewriteDeclarations(String stageText) {
+		String clean = COMMENT.matcher(stageText).replaceAll(" ");
 		Matcher m = SHADOW_DECLARATION.matcher(stageText);
 		StringBuilder out = new StringBuilder(stageText.length() + 16);
 		while (m.find()) {
 			int depth = depthIndexOf(m.group(3));
-			boolean rewrite = m.group(1) == null && depth >= 0 && hardwareDepth(depth)
-				&& !readsValue(stageText, m.group(3));
+			Boolean local = depth >= 0 ? stageHardwareOverride(clean, depth) : null;
+			boolean hw = local != null ? local : (depth >= 0 && hardwareDepth(depth));
+			boolean rewrite = m.group(1) == null && depth >= 0 && hw
+				&& !readsValueClean(clean, m.group(3));
 			String replacement = rewrite ? "sampler2DShadow" + m.group(2) + m.group(3) : m.group();
 			m.appendReplacement(out, Matcher.quoteReplacement(replacement));
 		}

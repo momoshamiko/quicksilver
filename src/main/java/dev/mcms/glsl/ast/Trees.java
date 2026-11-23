@@ -115,6 +115,54 @@ public final class Trees {
 		return result;
 	}
 
+	/**
+	 * Rebuilds {@code node} top-down: {@code rewriter} sees each node before its children are transformed (preserving
+	 * original child identities for semantic lookups), and then the returned node's children are transformed recursively.
+	 */
+	public static GlslNode transformTopDown(GlslNode node, UnaryOperator<GlslNode> rewriter) {
+		GlslNode current = rewriter.apply(node);
+		if (current == null) {
+			throw new IllegalArgumentException("rewriter returned null for " + describe(node));
+		}
+		RecordComponent[] components = COMPONENTS.get(current.getClass());
+		Object[] args = null;
+		for (int k = 0; k < components.length; k++) {
+			Object value = get(current, components[k]);
+			Object transformed = transformValueTopDown(value, rewriter);
+			if (transformed != value) {
+				if (args == null) {
+					args = new Object[components.length];
+					for (int j = 0; j < components.length; j++) {
+						args[j] = get(current, components[j]);
+					}
+				}
+				args[k] = transformed;
+			}
+		}
+		return args == null ? current : construct(current, args);
+	}
+
+	private static Object transformValueTopDown(Object value, UnaryOperator<GlslNode> rewriter) {
+		if (value instanceof GlslNode n) {
+			return transformTopDown(n, rewriter);
+		}
+		if (value instanceof List<?> list) {
+			List<Object> out = null;
+			for (int i = 0; i < list.size(); i++) {
+				Object element = list.get(i);
+				Object transformed = element instanceof GlslNode n ? transformTopDown(n, rewriter) : element;
+				if (transformed != element && out == null) {
+					out = new ArrayList<>(list.subList(0, i));
+				}
+				if (out != null) {
+					out.add(transformed);
+				}
+			}
+			return out == null ? value : List.copyOf(out);
+		}
+		return value;
+	}
+
 	private static Object transformValue(Object value, UnaryOperator<GlslNode> rewriter) {
 		if (value instanceof GlslNode n) {
 			return transform(n, rewriter);
