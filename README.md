@@ -17,7 +17,7 @@ that release asset, and its `SHA256SUMS` gives the jar's hash (the packed `nativ
 
 Names: the public name is Quicksilver (chosen 2026-10-16). Players see it as the mod id `quicksilver`, the shown
 name "Quicksilver", the jar `quicksilver-<version>.jar`, the driver string in the game's log ("Using graphics backend Metal,
-using drivers: Metal (Quicksilver 0.2.2, from mcopt 0.3.0-alpha.2)") and the MSL cache folder `<game dir>/quicksilver/`.
+using drivers: Metal (Quicksilver 0.2.3, from mcopt 0.3.0-alpha.2)") and the MSL cache folder `<game dir>/quicksilver/`.
 The project's internal name stays where players choose nothing: this folder, the package `dev.mcms.metal`, the
 `-Dmcms.metal.*` properties, the mixin config `mcms-metal.mixins.json`, the native library `libmcmsmetal.dylib`, and the
 `mcms-metal` tag at the start of the backend's log lines and error messages (bench scripts such as `bench/soak_check.py`
@@ -41,7 +41,7 @@ Needs macOS on Apple silicon, JDK 25 and Xcode's command line tools (`clang`):
 
 In the development repository: `cd mod/mcms-metal && JAVA_HOME=$PWD/../../.tools/jdk-25/Contents/Home ./gradlew build`.
 Gradle fetches the mixin targets (Sodium 0.9.3, Distant Horizons 3.3.4) from Modrinth's Maven by version id; they
-are compile-only and do not ship in the jar. The jar (`build/libs/quicksilver-0.2.2.jar`) packs `natives/libmcmsmetal.dylib`
+are compile-only and do not ship in the jar. The jar (`build/libs/quicksilver-0.2.3.jar`) packs `natives/libmcmsmetal.dylib`
 (built by `clang` from `src/main/native/mcmetal.m` and `mcshaders.m`), `LICENSE` and `NOTICE`.
 
 ## Settings
@@ -134,7 +134,7 @@ still cannot be made, for example when the library does not load, `MetalBackend.
 | `mcms.metal.textureLog` | `false` | a `mcms-metal texture:` line for each texture created (handle, size, format, usage, label, the first three callers outside the backend and the renderpearl API) and closed (handle; handles are reused, so match them in log order): who keeps textures alive (spec S4, `results/2026-10-13-m5-texlog`) |
 | `mcms.metal.texelCache` | `true` | texel-buffer views kept across frames |
 | `mcms.metal.mslCache` | `true` | translated MSL kept on disk under `<game dir>/quicksilver/msl-cache` (`mcms.metal.mslCacheDir` overrides the directory; before 2026-10-16 the folder was `<game dir>/mcms-metal/msl-cache`) |
-| `mcms.metal.arenaReserve` | `268435456` (256 MiB) | one buffer for Sodium's next big geometry arena, provisioned off the render thread; `0` turns it off |
+| `mcms.metal.arenaReserve` | `268435456` (256 MiB), or `0` on a Mac whose recommended working set is under 8 GiB (8 GB Macs report about 5.33 GiB; 16 GB Macs report 10.67 GiB and keep 256 MiB) | one buffer for Sodium's next big geometry arena, provisioned off the render thread whenever Sodium asks for an arena of 64 MiB or more, and handed to a request of half its size or more; `0` turns it off, another byte count of 64 MiB or more sets its size, and a count under 64 MiB turns it off (no arena it serves could take it). The INFO line `Sodium arena reserve <bytes> bytes: <reason>` at device creation names the size and why |
 | `mcms.metal.inFlight` | `2` | frames in flight |
 | `mcms.metal.presentQueue`, `paceSync`, `paceMarginMs`, `drawables`, `lazyClears`, `frameDepthDiscard`, `cbdiag`, `trace`, `gpuTimes`, `stats`, `waitStats`, `jfr`, `frameLog`, `encLog`, `dumpMsl`, `overrideMsl`, `uncachedMsl`, `gpuCount`, `passTest`, `latency` | off | diagnostics and experiments, unchanged from mcopt, except that the `stats` line and the `gpu` lines of `trace` are printed with `println` (Minecraft's log keeps only `println` output), that `frameLog` with `gpuTimes` adds each present's `presentedTime` (`presentedUs`, M5), and that `encLog` (with `frameLog`; `enclog.csv`, read by `bench/pass_report.py`) keeps the game's pass label of each render encoder and also timestamps the frame's blit encoders, naming the mip chains they fill (after M5; `trace`'s `gpu` lines list those blit encoders too, so their encoder numbers differ from M5's) |
 | `mcms.metal.vsyncLowLatency` | off | experiment after M5 (`true` or empty for a 1.5 ms margin, or the margin in ms): with VSync on, the VSync-on wait moves from before the drawable to after the frame's present is committed, before the game polls input for the next frame, and ends at the next refresh minus the second longest wake-to-GPU-done time of the last 32 frames plus the margin, so the next frame is sampled about that lead before it is shown; a frame slower than its lead is shown a refresh late. The `vsyncPaceTest` switches do not act on it |
@@ -169,7 +169,7 @@ and `results/2026-10-12-m4-*`), with four files adapted from Vitrail under LGPL-
 own engine draws the shader packs (`docs/engine/plan.md`), and `fabric.mod.json` breaks Vitrail, so the game does not start
 with both.
 
-Sodium's arena textures (RIL-477, applied only when Sodium is loaded): Sodium 0.9.3's `BufferArena` constructor (alpha.1 and beta.1)
+Sodium's arena textures (RIL-477, applied only when Sodium is loaded and its release is 0.9.2 or a 0.9.3 prerelease, the builds checked with javap): Sodium's `BufferArena` constructor (every Sodium build for 26.3 before stable 0.9.3: 0.9.2, and 0.9.3-alpha.1 through beta.5; stable 0.9.3 fixed it)
 registers a 200x200 debug-map `DynamicTexture` in the game's `TextureManager` under a name made from the arena's identity
 hash, and nothing in Sodium releases it, so every arena left one behind until shutdown (278,528 bytes of Metal texture plus
 160,000 bytes of CPU pixels; three per long teleport in the soak, `results/2026-10-13-m5-texlog`). `SodiumBufferArenaAccessor`

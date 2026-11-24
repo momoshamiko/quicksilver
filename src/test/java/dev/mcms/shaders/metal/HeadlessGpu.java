@@ -216,7 +216,7 @@ public final class HeadlessGpu implements AutoCloseable {
 		try {
 			for (int i = 0; i < tex.length; i++) handles[i] = uploadTexture(tex[i]);
 			return drawFullscreen(msl, vertexEntry, fragmentEntry, targetFormats, width, height, handles, uniforms,
-				stageBuffers, clearRgba);
+				stageBuffers, clearRgba, null);
 		} finally {
 			for (long handle : handles) if (handle != 0) MetalBridge.release(handle);
 		}
@@ -229,17 +229,29 @@ public final class HeadlessGpu implements AutoCloseable {
 	public byte[][] renderFullscreenOn(String msl, String vertexEntry, String fragmentEntry, int[] targetFormats, int width,
 		int height, long[] textures, byte[] uniforms, byte @Nullable [][] stageBuffers) {
 		return drawFullscreen(msl, vertexEntry, fragmentEntry, targetFormats, width, height, textures, uniforms,
-			stageBuffers, null);
+			stageBuffers, null, null);
+	}
+
+	/**
+	 * Like renderFullscreenCleared with no textures, but attachment k writes with writeMasks[k] (renderpearl's RGBA bits: 15 all,
+	 * 0 none). Metal checks a fragment output's type against its attachment's format even when the mask is 0, so a float output
+	 * on an integer attachment is refused whatever the mask.
+	 */
+	public byte[][] renderFullscreenWithWriteMasks(String msl, String vertexEntry, String fragmentEntry, int[] targetFormats,
+		int[] writeMasks, int width, int height, float[] clearRgba) {
+		return drawFullscreen(msl, vertexEntry, fragmentEntry, targetFormats, width, height, new long[0], new byte[16], null,
+			clearRgba, writeMasks);
 	}
 
 	private byte[][] drawFullscreen(String msl, String vertexEntry, String fragmentEntry, int[] targetFormats, int width,
-		int height, long[] textures, byte[] uniforms, byte @Nullable [][] stageBuffers, float @Nullable [] clearRgba) {
+		int height, long[] textures, byte[] uniforms, byte @Nullable [][] stageBuffers, float @Nullable [] clearRgba,
+		int @Nullable [] writeMasks) {
 		ensure();
 		ShaderNative.Compiled lib = ShaderNative.libraryNew(ctx, msl, languageVersion, mathMode, preserveInvariance);
 		if (!lib.ok()) throw new IllegalStateException("render source failed to compile: " + lib.error());
 		try {
 			long pso = MetalBridge.pipelineNew(ctx, lib.library(), vertexEntry, lib.library(), fragmentEntry,
-				colorDescriptor(targetFormats));
+				colorDescriptor(targetFormats, writeMasks));
 			long[] targets = new long[targetFormats.length];
 			byte[][] stages = stageBuffers == null ? new byte[0][] : stageBuffers;
 			long[] stageHandles = new long[stages.length];
@@ -458,16 +470,19 @@ public final class HeadlessGpu implements AutoCloseable {
 		return handle;
 	}
 
-	/** The int descriptor mc_pipeline_new parses: no vertex buffers or attributes, the target formats, no depth, triangle. */
-	private static int[] colorDescriptor(int[] targetFormats) {
+	/**
+	 * The int descriptor mc_pipeline_new parses: no vertex buffers or attributes, the target formats, no depth, triangle. writeMasks
+	 * (renderpearl's RGBA bits, 15 all and 0 none) gives each attachment its mask; null writes every attachment.
+	 */
+	private static int[] colorDescriptor(int[] targetFormats, int @Nullable [] writeMasks) {
 		int[] descriptor = new int[3 + targetFormats.length * 9 + 2];
 		int i = 0;
 		descriptor[i++] = 0;  // vertexBufferCount
 		descriptor[i++] = 0;  // attributeCount
 		descriptor[i++] = targetFormats.length;
-		for (int format : targetFormats) {
-			descriptor[i++] = format;
-			descriptor[i++] = WRITE_MASK_ALL;
+		for (int attachment = 0; attachment < targetFormats.length; attachment++) {
+			descriptor[i++] = targetFormats[attachment];
+			descriptor[i++] = writeMasks == null ? WRITE_MASK_ALL : writeMasks[attachment];
 			descriptor[i++] = 0;  // blending off
 			i += 6;  // the blend factors and operations stay zero
 		}

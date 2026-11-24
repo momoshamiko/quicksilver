@@ -33,6 +33,7 @@ import com.mojang.renderpearl.backend.api.GpuDeviceBackend;
 import com.mojang.renderpearl.backend.api.GpuSurfaceBackend;
 import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.Locale;
 import java.util.OptionalDouble;
 import java.util.OptionalLong;
 import java.util.Set;
@@ -41,21 +42,25 @@ import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 final class MetalDevice implements GpuDeviceBackend {
+	private static final Logger LOG = LoggerFactory.getLogger("Quicksilver");
+
 	/**
 	 * Sodium grows its terrain geometry in arenas of up to 256 MiB, created the moment a region no longer fits (flight 5.34 s:
 	 * 179 MB). A fresh buffer's memory is found and wired in the submission of the first command buffer using it, the whole
 	 * buffer at once, and when free memory is short the kernel compresses other memory first: 36-45 ms of one frame on the mini
 	 * with a 4 GiB heap. So one arena of this size is kept provisioned ahead of need, off the render thread (Native.poolAdd),
 	 * and handed to the next arena request it can hold, with its full size: Sodium sizes the arena from buffer.size(). Costs
-	 * its size in memory while it waits. -Dmcms.metal.arenaReserve=0 turns it off; devices with a small working set (e.g. 8 GiB
-	 * Macs) disable it by default to avoid wiring 256 MiB ahead of time.
+	 * its size in memory while it waits. -Dmcms.metal.arenaReserve=N sets its size, and 0 turns it off. Macs whose recommended
+	 * working set is under 8 GiB (8 GB Macs report about 5.33 GiB) leave it off by default, to avoid wiring 256 MiB ahead of time.
 	 */
 	private static final @Nullable Long ARENA_RESERVE_PROP = Long.getLong("mcms.metal.arenaReserve");
 	private static final long ARENA_RESERVE_DEFAULT = 256L << 20;
-	/** Minimum recommended working set (12 GiB) before pre-wiring a 256 MiB spare arena by default. */
-	private static final long ARENA_RESERVE_MIN_WORKING_SET = 12L << 30;
+	/** Recommended working set below which the default is off: 8 GB Macs report about 5.33 GiB, 16 GB Macs 10.67 GiB (llama.cpp #4495). */
+	private static final long ARENA_RESERVE_MIN_WORKING_SET = 8L << 30;
 	/** Wiring costs about 0.03 ms per MiB with memory free and 0.2-0.25 ms per MiB when short: only big arenas stall a frame. */
 	private static final long ARENA_RESERVE_MIN = 64L << 20;
 	private final long arenaReserve;
@@ -67,17 +72,58 @@ final class MetalDevice implements GpuDeviceBackend {
 	static volatile @Nullable MetalDevice current;
 	private final DeviceInfo info;
 
+	/** The resolved arena reserve: its size in bytes and the reason for that size (the device's creation log line). */
+	record ArenaReserve(long bytes, String reason) {
+	}
+
+	/**
+	 * The arena reserve's size, as a pure decision so the tests check it: the -Dmcms.metal.arenaReserve value when set (below 0
+	 * is 0, and below the 64 MiB arena minimum is 0 too, since no arena that the reserve serves could take it), otherwise
+	 * 256 MiB, except 0 when the recommended working set is known and under 8 GiB. An unknown working set (0) keeps the default.
+	 */
+	static ArenaReserve arenaReserve(@Nullable Long property, long workingSet) {
+		if (property != null) {
+			if (property > 0 && property < ARENA_RESERVE_MIN) {
+				return new ArenaReserve(0L, "-Dmcms.metal.arenaReserve=" + property + " is under the 64 MiB arena minimum, so off");
+			}
+			return new ArenaReserve(Math.max(0L, property), "-Dmcms.metal.arenaReserve");
+		}
+		if (workingSet > 0 && workingSet < ARENA_RESERVE_MIN_WORKING_SET) {
+			return new ArenaReserve(0L, "off by default: recommended working set " + gib(workingSet) + " GiB is under 8 GiB");
+		}
+		return new ArenaReserve(ARENA_RESERVE_DEFAULT,
+			workingSet > 0 ? "default: recommended working set " + gib(workingSet) + " GiB" : "default: working set unknown");
+	}
+
+	/**
+	 * Whether an arena request of this size keeps the reserve provisioned: every arena of 64 MiB or more, so the reserve is
+	 * ready before the first big arena needs it. This is the shape before 0.2.1; 0.2.1 provisioned only on a request that
+	 * could also take the reserve, so the first big arena found the pool empty.
+	 */
+	static boolean provisionsReserve(long size, long reserve) {
+		return reserve > 0 && size >= ARENA_RESERVE_MIN;
+	}
+
+	/** Whether an arena request may take the provisioned reserve: at most twice what was asked for (Sodium fills an arena over time). */
+	static boolean takesReserve(long size, long reserve) {
+		return provisionsReserve(size, reserve) && size <= reserve && size * 2 >= reserve;
+	}
+
+	private static String gib(long bytes) {
+		return String.format(Locale.ROOT, "%.2f", bytes / (double) (1L << 30));
+	}
+
 	MetalDevice() throws BackendCreationException {
 		try (MemoryStack stack = MemoryStack.stackPush()) {
 			long name = stack.nmalloc(1, 256), err = stack.nmalloc(1, 1024);
 			this.ctx = Native.create(name, 256, err, 1024);
 			if (this.ctx == 0) throw new BackendCreationException("Metal unavailable: " + MemoryUtil.memUTF8(err), BackendCreationException.Reason.PLATFORM_ERROR);
 			long workingSet = Native.recommendedWorkingSet(this.ctx);
-			this.arenaReserve = ARENA_RESERVE_PROP != null
-				? Math.max(0L, ARENA_RESERVE_PROP)
-				: (workingSet > 0 && workingSet < ARENA_RESERVE_MIN_WORKING_SET ? 0L : ARENA_RESERVE_DEFAULT);
+			ArenaReserve reserve = arenaReserve(ARENA_RESERVE_PROP, workingSet);
+			this.arenaReserve = reserve.bytes();
+			LOG.info("Sodium arena reserve {} bytes: {}", reserve.bytes(), reserve.reason());
 			this.info = new DeviceInfo(
-				MemoryUtil.memUTF8(name), "Apple", "Metal (Quicksilver 0.2.2, from mcopt 0.3.0-alpha.2)", true, "Metal", 1.0F,
+				MemoryUtil.memUTF8(name), "Apple", "Metal (Quicksilver 0.2.3, from mcopt 0.3.0-alpha.2)", true, "Metal", 1.0F,
 				new DeviceLimits(16, 256, 16384, Native.maxBufferLength(this.ctx), Integer.MAX_VALUE, 8, Integer.MAX_VALUE),
 				// Every multi-draw form is a native loop of Metal draws, so all of them are "supported".
 				new DeviceFeatures(true, true, true, true, true, true, true, true),
@@ -151,10 +197,8 @@ final class MetalDevice implements GpuDeviceBackend {
 		MetalBuffer buffer;
 		try {
 			long handle = 0, actual = size;
-			if (arena && this.arenaReserve > 0 && size >= ARENA_RESERVE_MIN
-					&& size <= this.arenaReserve && size * 2 >= this.arenaReserve) {
-				// At most twice what was asked for: Sodium fills an arena over time, a much bigger one would mostly sit empty.
-				handle = Native.poolTake(size, this.arenaReserve);
+			if (arena && provisionsReserve(size, this.arenaReserve)) {
+				if (takesReserve(size, this.arenaReserve)) handle = Native.poolTake(size, this.arenaReserve);
 				if (handle != 0) {
 					actual = Native.bufferLength(handle);
 					this.arenaReserved = false;

@@ -13,7 +13,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * and for every shared arena when the aggregator is deleted; it closes the arena's buffer and nothing else. This releases
  * the arena's debug-map texture from the {@code TextureManager} as well (see {@code SodiumBufferArenaAccessor}). Removing
  * one owner ({@code deleteSingleOwner} on a shared arena) leaves the arena alive and its texture registered. Applied only
- * when Sodium is loaded.
+ * when Sodium is loaded and its release is 0.9.2 or a 0.9.3 prerelease ({@code SodiumAdapter.needsArenaLeakWorkaround}).
  */
 @Mixin(SharedBufferArena.class)
 abstract class SodiumSharedArenaMixin {

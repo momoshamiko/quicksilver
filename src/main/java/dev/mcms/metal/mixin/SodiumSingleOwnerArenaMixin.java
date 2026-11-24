@@ -12,7 +12,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 /**
  * RIL-477: a dedicated (single-owner) arena dies when its one region lets go of it; {@code deleteSingleOwner} closes the
  * arena's buffer and nothing else. This releases the arena's debug-map texture from the {@code TextureManager} as well,
- * which closes its GPU texture and its CPU pixels (see {@code SodiumBufferArenaAccessor}). Applied only when Sodium is loaded.
+ * which closes its GPU texture and its CPU pixels (see {@code SodiumBufferArenaAccessor}). Applied only when Sodium is loaded
+ * and its release is 0.9.2 or a 0.9.3 prerelease ({@code SodiumAdapter.needsArenaLeakWorkaround}).
  */
 @Mixin(SingleOwnerBufferArena.class)
 abstract class SodiumSingleOwnerArenaMixin {

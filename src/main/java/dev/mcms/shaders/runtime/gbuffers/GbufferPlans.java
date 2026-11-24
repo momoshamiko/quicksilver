@@ -55,6 +55,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.IntFunction;
+import net.minecraft.client.renderer.ShaderDefines;
 import net.minecraft.resources.Identifier;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -2309,9 +2310,9 @@ public final class GbufferPlans implements AutoCloseable {
 	/**
 	 * A copy of a game pipeline with one colour target per attachment of a phase's group (2026-11-15): attachment 0 takes the
 	 * game's own target (its blend and write mask) in {@code formats[0]}, every other attachment is {@code formats[k]} with no
-	 * write, so the pass keeps its contents there. The game's shaders, shader defines, bind groups, depth state, cull, topology
-	 * and vertex formats are kept, under the location {@code <game><suffix>}. It is built through the renderpearl constructor so
-	 * the copy keeps the game's defines (the builder cannot copy them).
+	 * write, so the pass keeps its contents there. The game's shaders, bind groups, depth state, cull, topology and vertex formats
+	 * are kept, under the location {@code <game><suffix>}; its shader defines are the game's, except as {@link #copyDefines} sets
+	 * them. It is built through the renderpearl constructor so the copy keeps the game's defines (the builder cannot copy them).
 	 */
 	static RenderPipeline copyWithTargets(RenderPipeline game, GpuFormat[] formats, String suffix) {
 		ColorTargetState first = game.getColorTargetStates().get(0);
@@ -2323,10 +2324,46 @@ public final class GbufferPlans implements AutoCloseable {
 		List<VertexFormat> vertexFormats = game.getVertexFormatBindings();
 		Identifier location = Identifier.fromNamespaceAndPath(game.getLocation().getNamespace(),
 			game.getLocation().getPath() + suffix);
-		return new RenderPipeline(location, game.getShaders(), game.getShaderDefines(), game.getBindGroupLayouts(), targets,
+		return new RenderPipeline(location, game.getShaders(), copyDefines(game, formats), game.getBindGroupLayouts(), targets,
 				game.getDepthStencilState(), game.getPolygonMode(), game.isCull(), vertexFormats.toArray(new VertexFormat[0]),
 				game.getPrimitiveTopology(), game.pushConstantSize(), game.getSortKey()) {
 		};
+	}
+
+	/** The transmittance pipelines' coefficient count define (OIT_SNIPPET) and the flag that marks a transmittance pipeline. */
+	private static final String OIT_COEFFICIENT_COUNT = "OIT_COEFF_ATTACHMENT_COUNT";
+	private static final String OIT_TRANSMITTANCE = "OIT_TRANSMITTANCE";
+
+	/**
+	 * The shader defines of a copy (2026-11-23). A transmittance pipeline's fragment writes one float4 output per counted attachment:
+	 * oit_add_transmittance.glsl declares {@code coeff[OIT_COEFF_ATTACHMENT_COUNT]} (locations 0 and 1 for the count of 2 that OIT_SNIPPET
+	 * sets), and writes coeff[a] from coefficients 4a to 4a+3 for each a below the count (Minecraft 26.3's assets). Metal checks each
+	 * fragment output against the pipeline's attachment of its index, integer ones included, even with no write: a float4 output on an
+	 * RGBA32Uint attachment fails the pipeline (Noble 1.9.9's copies). So when a masked attachment at index k is an integer format and
+	 * k is below the game's count, the copy counts k outputs, and the shader declares only the outputs for attachments below k. Attachment
+	 * 0 is the same: coeff[0] takes coefficients 0 to 3 for any count of one or more. Every other pipeline keeps the game's defines.
+	 */
+	static ShaderDefines copyDefines(RenderPipeline game, GpuFormat[] formats) {
+		ShaderDefines defines = game.getShaderDefines();
+		String count = defines.values().get(OIT_COEFFICIENT_COUNT);
+		if (count == null || !defines.flags().contains(OIT_TRANSMITTANCE)) {
+			return defines;
+		}
+		int limit;
+		try {
+			limit = Integer.parseInt(count);
+		} catch (NumberFormatException notANumber) {
+			return defines;  // a count the shader does not read as a number: the game's defines stay
+		}
+		for (int attachment = 1; attachment < formats.length; attachment++) {
+			if (TargetFormats.isInteger(MetalBridge.pixelFormat(formats[attachment]))) {
+				if (attachment >= limit) {
+					return defines;  // every counted output lands on an attachment below this one
+				}
+				return defines.withOverrides(ShaderDefines.builder().define(OIT_COEFFICIENT_COUNT, attachment).build());
+			}
+		}
+		return defines;
 	}
 
 	/**

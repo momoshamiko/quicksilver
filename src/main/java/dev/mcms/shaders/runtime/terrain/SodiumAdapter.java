@@ -53,15 +53,25 @@ public final class SodiumAdapter {
 	}
 
 	/**
-	 * Whether this Sodium release needs Quicksilver's arena debug-texture leak mixins.
-	 * Sodium 0.9.3 fixed the leak upstream (lazy debug texture closed in {@code BufferArena.close}, ADR 0009).
+	 * Whether this Sodium release needs Quicksilver's arena debug-texture leak mixins: the 26.3 builds checked with javap, 0.9.2
+	 * and every 0.9.3 prerelease. Their {@code BufferArena} constructor registers a debug texture that nothing releases; stable
+	 * 0.9.3 closes it in {@code BufferArena.close} (Sodium commit 1d8b33dc, ADR 0009), and 0.9.3 and 0.9.4-beta.1 share that fixed
+	 * code, so they get no workaround. Evidence: results/2026-11-23-arena-bytecode/README.md. The build part after {@code +} is
+	 * ignored; null (no Sodium) gets false.
 	 */
 	public static boolean needsArenaLeakWorkaround(@Nullable String version) {
 		if (version == null) {
 			return false;
 		}
-		String base = version.split("\\+", 2)[0];
-		return "0.9.3-beta.1".equals(base) || "0.9.3-beta.5".equals(base);
+		return verifiedLeakRelease(version.split("\\+", 2)[0]);
+	}
+
+	/**
+	 * Whether a release word (build part stripped) is a build the arena bytecode was checked on: exactly 0.9.2, or a 0.9.3
+	 * prerelease. Every other word gets false, including 0.9.1, 0.8.x, 0.9.2 prereleases, stable 0.9.3 and 0.9.4-beta.1.
+	 */
+	static boolean verifiedLeakRelease(String base) {
+		return "0.9.2".equals(base) || base.startsWith("0.9.3-");
 	}
 
 	/**

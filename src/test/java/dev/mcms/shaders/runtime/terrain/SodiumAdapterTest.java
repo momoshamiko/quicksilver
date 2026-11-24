@@ -37,6 +37,22 @@ class SodiumAdapterTest {
 	}
 
 	@Test
+	void theArenaLeakWorkaroundCoversOnlyTheCheckedBuilds() {
+		// javap -p -c, 2026-11-23 (results/2026-11-23-arena-bytecode): 0.9.2 and every 0.9.3 prerelease share the arena bytecode.
+		for (String release : new String[] {"0.9.2", "0.9.2+mc26.3", "0.9.3-alpha.1", "0.9.3-beta.1", "0.9.3-beta.2", "0.9.3-beta.3",
+			"0.9.3-beta.4", "0.9.3-beta.5", "0.9.3-alpha.1+mc26.3", "0.9.3-beta.2+mc26.3"}) {
+			assertTrue(SodiumAdapter.needsArenaLeakWorkaround(release), release);
+		}
+		// Stable 0.9.3 and later share the fixed code; the older lines and the 0.9.2 prereleases were not checked.
+		for (String release : new String[] {"0.9.1", "0.8.0", "0.9.2-beta.1", "0.9.3", "0.9.3+mc26.3", "0.9.4", "0.9.4-beta.1",
+			"0.10.0", "0.10.0-alpha.1"}) {
+			assertFalse(SodiumAdapter.needsArenaLeakWorkaround(release), release);
+		}
+		assertFalse(SodiumAdapter.needsArenaLeakWorkaround(null));
+		assertFalse(SodiumAdapter.needsArenaLeakWorkaround("beta"), "a word that is not a release gets no workaround");
+	}
+
+	@Test
 	void the093MembersResolveFromItsJar() throws Exception {
 		String jar = System.getProperty("mcms.test.sodium.093");
 		assumeTrue(jar != null, "the 0.9.3 jar path was not set");
